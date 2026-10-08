@@ -1,0 +1,101 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Plain windows TFM: keeps the 25 MB WinRT projection out of the
+         package. Requires the NAudio.Core/NAudio.WinMM 2.2.1 split below
+         (the 3.x metapackage only ships WinMM assets to versioned TFMs). -->
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AssemblyName>Chatterbox</AssemblyName>
+    <RootNamespace>Chatterbox</RootNamespace>
+    <Version>1.6.0</Version>
+    <!-- owner/name of the GitHub repository releases are published to; the
+         in-app updater (AppUpdater) asks its Releases API for the latest
+         one. Empty = no update source: Settings > Updates says so and the
+         app never contacts GitHub. -->
+    <UpdateRepository>netizen-kruze/Chatterbox</UpdateRepository>
+    <Product>Chatterbox</Product>
+    <AssemblyTitle>Chatterbox — live captions for VRChat</AssemblyTitle>
+    <Company>Chatterbox</Company>
+    <Copyright>© 2026 Chatterbox</Copyright>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The embedded PDB ships in the release exe; without this mapping its
+         document table (and symbolicated stack traces in error.log) would
+         carry the build machine's full source paths. Release-only so local
+         Debug builds keep real paths for breakpoint binding. -->
+    <PathMap Condition="'$(Configuration)' == 'Release'">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))=.\</PathMap>
+    <!-- Single source of truth for the Whisper.net version: the package
+         references, the embedded-natives path, and the guard target all
+         read this, so a version bump can never drift them apart. -->
+    <WhisperNetVersion>1.9.1</WhisperNetVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pinned at 2.2.1: same WinMM capture code, works on the plain TFM.
+         The 3.x rename (WaveInEvent -> WaveIn) does not apply here. -->
+    <PackageReference Include="NAudio.Core" Version="2.2.1" />
+    <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
+    <PackageReference Include="Whisper.net" Version="$(WhisperNetVersion)" />
+    <!-- ExcludeAssets: the runtime package would drop its natives loose in
+         the output, and a single-file publish would then bundle them where
+         Whisper.net's loader never probes (the host's own extraction dir).
+         Instead they ship as embedded resources (below) and Program.cs
+         places them in runtimes\win-x64 beside the exe at boot — a probed
+         path, the same one the CUDA pack installs into. -->
+    <PackageReference Include="Whisper.net.Runtime" Version="$(WhisperNetVersion)" ExcludeAssets="all" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
+    <!-- The 22 MB win-x64 natives ship via the in-app engine pack instead
+         (SttEnginePack); excluding them here keeps the package small. -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.13.5" ExcludeAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The UI ships inside the assembly, so a single-file publish leaves
+         nothing in the folder but the exe. -->
+    <EmbeddedResource Include="wwwroot\**">
+      <LogicalName>ui/wwwroot/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="app.ico">
+      <LogicalName>ui/app.ico</LogicalName>
+    </EmbeddedResource>
+    <!-- The speed check's 14 s speech clip (a synthetic voice reading known
+         text), transcribed by every installed engine to time this machine. -->
+    <EmbeddedResource Include="Bench\fixture.wav">
+      <LogicalName>bench/fixture.wav</LogicalName>
+    </EmbeddedResource>
+    <!-- The license documents render in-app (Settings > About) instead of
+         shipping as loose files beside the exe. Not under ui/ on purpose:
+         they are read straight from the assembly, never extracted. -->
+    <EmbeddedResource Include="..\..\README.md">
+      <LogicalName>docs/README.md</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\LICENSE">
+      <LogicalName>docs/LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\NOTICE.txt">
+      <LogicalName>docs/NOTICE.txt</LogicalName>
+    </EmbeddedResource>
+    <!-- whisper.cpp CPU natives (~2 MB), extracted at boot by
+         Program.ExtractWhisperNatives. The path follows $(WhisperNetVersion),
+         so it can't drift from the package references. -->
+    <EmbeddedResource Include="$(NuGetPackageRoot)whisper.net.runtime\$(WhisperNetVersion)\build\win-x64\*.dll">
+      <LogicalName>natives/win-x64/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="EnsureWhisperNatives" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(NuGetPackageRoot)whisper.net.runtime\$(WhisperNetVersion)\build\win-x64\whisper.dll')"
+           Text="Whisper.net.Runtime $(WhisperNetVersion) natives not found in the NuGet cache — run a package restore first." />
+  </Target>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Chatterbox.Tests" />
+    <!-- Baked into the assembly for AppUpdater.Repository; absent when unset. -->
+    <AssemblyMetadata Include="UpdateRepository" Value="$(UpdateRepository)" Condition="'$(UpdateRepository)' != ''" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,28 @@
+Chatterbox — live local speech-to-text captions for the VRChat chatbox
+====================================================================
+
+Third-party software
+--------------------
+- Whisper.net and whisper.cpp — MIT (Sandro Hanea; Georgi Gerganov et al.)
+- sherpa-onnx — Apache-2.0 (k2-fsa)
+- ONNX Runtime — MIT (Microsoft)
+- NAudio — MIT (Mark Heath)
+- Photino.NET — Apache-2.0 (TryPhotino)
+- Newtonsoft.Json — MIT (James Newton-King)
+- Atkinson Hyperlegible font — SIL OFL 1.1 (Braille Institute of America)
+- IBM Plex Sans / IBM Plex Mono fonts — SIL OFL 1.1 (IBM)
+
+Models (downloaded at runtime, never bundled)
+---------------------------------------------
+- OpenAI Whisper models — MIT (ggml conversions by ggerganov/whisper.cpp)
+- NVIDIA Parakeet TDT 0.6B v2 — CC-BY-4.0 (NVIDIA; int8 ONNX export by
+  k2-fsa/sherpa-onnx, csukuangfj — a modification of the original model).
+  License: https://creativecommons.org/licenses/by/4.0/
+- Silero VAD — MIT (snakers4/silero-vad; ggml conversion by ggml-org)
+- Whisper CUDA acceleration pack — MIT (whisper.cpp CUDA build, packaged
+  by Whisper.net)
+
+A machine-readable manifest of installed models and their licenses is
+written next to the models themselves (models_manifest.json).
+
+Full license texts for all of the above: THIRD_PARTY_LICENSES.md.
