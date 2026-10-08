@@ -141,7 +141,7 @@ public sealed class AppUpdater
             request.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
             using var response = await _http.SendAsync(request, timeout.Token).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
-                return new UpdateCheck(null, null, "no release has been published yet");
+                return new UpdateCheck(null, null, "GitHub shows no release — none has been published yet, or the repository is still private");
             if (!response.IsSuccessStatusCode)
                 return new UpdateCheck(null, null, $"GitHub answered {(int)response.StatusCode} {response.ReasonPhrase}");
             var json = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
