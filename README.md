@@ -115,6 +115,8 @@ engine is missing, captions simply run untranslated and a toast says why.
 The recognition engine and Whisper model selectors live on the Models
 screen under **In use** (moved there from Settings in 1.7.0).
 
+![The Translate tab](docs/screenshot-translate.png)
+
 The model was chosen by a timed comparison of the small open-weight
 translators (`docs/TRANSLATION_BENCH-2026-10-08.md`): the fastest one that
 was also accurate. The picker lists the languages it does best.
