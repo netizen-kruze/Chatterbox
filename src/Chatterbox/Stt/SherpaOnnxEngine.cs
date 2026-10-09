@@ -68,8 +68,9 @@ public sealed class SherpaOnnxEngine : ISttEngine
             {
                 try
                 {
-                    var hotwordsPath = Path.Combine(Path.GetTempPath(),
-                        $"chatterbox-hotwords-{Guid.NewGuid():N}.txt");
+                    // One file, overwritten per load — never a growing temp folder.
+                    var hotwordsPath = Path.Combine(SttPaths.DataDir, "hotwords.txt");
+                    Directory.CreateDirectory(SttPaths.DataDir);
                     File.WriteAllLines(hotwordsPath, _biasTerms);
                     var biased = config;
                     biased.DecodingMethod = "modified_beam_search";
@@ -102,8 +103,18 @@ public sealed class SherpaOnnxEngine : ISttEngine
     public Task<string> TranscribeAsync(byte[] pcm, int length, CancellationToken ct = default) =>
         Task.FromResult(TranscribeTimed(pcm, length).Text);
 
-    public Task<SttTranscript> TranscribeTimedAsync(byte[] pcm, int length, CancellationToken ct = default) =>
-        Task.FromResult(TranscribeTimed(pcm, length));
+    // A running native decode cannot be interrupted, but a cancelled session
+    // is never handed another one.
+    public Task<SttTranscript> TranscribeTimedAsync(byte[] pcm, int length, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(TranscribeTimed(pcm, length));
+    }
+
+    // Parakeet's cost grows with the window: cap what one pass is handed
+    // (the pipeline keeps the rest as the next window), so a slow CPU never
+    // faces a 28 s decode at the end of a long sentence.
+    public int MaxWindowMs => 20_000;
 
     private SttTranscript TranscribeTimed(byte[] pcm, int length)
     {

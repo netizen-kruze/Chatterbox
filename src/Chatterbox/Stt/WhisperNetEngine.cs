@@ -101,6 +101,7 @@ public sealed class WhisperNetEngine : ISttEngine
         {
             DisposeCore();
             error = $"Whisper model load failed: {ex.Message}";
+            error += AvxNote();
             return false;
         }
     }
@@ -145,6 +146,13 @@ public sealed class WhisperNetEngine : ISttEngine
         var parts = sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return string.Join(' ', parts);
     }
+
+    // The bundled whisper.cpp build is compiled for AVX2; on a CPU without it
+    // the load fails in a way that looks like a bad model file. Say why.
+    internal static string AvxNote() =>
+        System.Runtime.Intrinsics.X86.Avx2.IsSupported
+            ? ""
+            : " — this CPU has no AVX2, which the bundled Whisper build needs; the Parakeet engine runs without it";
 
     private void DisposeCore()
     {

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
@@ -111,7 +112,7 @@ public static class SttModelCatalog
 // atomically; the manifest is rewritten after changes.
 public sealed class SttModelManager
 {
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(30) }) { Timeout = Timeout.InfiniteTimeSpan };
 
     // Identifies the app to the download hosts by name and version.
     // Unset sends no User-Agent header.
@@ -145,7 +146,8 @@ public sealed class SttModelManager
         var model = SttModelCatalog.Find(id);
         if (model == null) return (false, $"unknown model '{id}'");
 
-        Directory.CreateDirectory(DirFor(model));
+        try { Directory.CreateDirectory(DirFor(model)); }
+        catch (Exception ex) { return (false, $"{model.DisplayName}: cannot create {DirFor(model)} — {ex.Message}"); }
         long total = model.SizeBytes;
         long done = model.Files.Where(f => IsFileCurrent(model, f)).Sum(f => f.SizeBytes);
 
@@ -171,20 +173,21 @@ public sealed class SttModelManager
         var finalPath = PathFor(model, file);
         var partialPath = finalPath + ".partial";
 
+        // A network failure keeps the .partial so the next attempt resumes
+        // it; a cancel, a bad size, a bad hash or a server that can no
+        // longer continue it (416: the source shrank) discard it.
+        bool keepPartial = false;
         try
         {
-            using var response = await Http.GetAsync(file.Url, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            SttDownload.EnsureFreeSpace(Path.GetDirectoryName(partialPath)!, file.SizeBytes);
+            // The bytes already staged count: a resume on a nearly full
+            // drive needs only the remainder (a restart truncates the
+            // partial first, freeing the same amount).
+            long have = 0;
+            try { if (new FileInfo(partialPath) is { Exists: true } fi && fi.Length < file.SizeBytes) have = fi.Length; } catch { }
+            SttDownload.EnsureFreeSpace(Path.GetDirectoryName(partialPath)!, file.SizeBytes - have);
             using var sha = SHA256.Create();
-            long received;
-            await using (var source = await response.Content.ReadAsStreamAsync(ct))
-            await using (var target = File.Create(partialPath))
-            {
-                received = await SttDownload.CopyAsync(source, target, sha,
-                    got => OnProgress?.Invoke(model.Id, doneBefore + got, total), ct);
-            }
+            long received = await SttDownload.ResumableDownloadAsync(Http, file.Url, partialPath, file.SizeBytes, sha,
+                got => OnProgress?.Invoke(model.Id, doneBefore + got, total), ct);
             if (received != file.SizeBytes)
                 return (false, $"{model.DisplayName} ({file.FileName}): size mismatch ({received} vs {file.SizeBytes} bytes)");
 
@@ -199,16 +202,25 @@ public sealed class SttModelManager
         {
             return (false, "download cancelled");
         }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            // The partial is longer than what the server now has: it can
+            // never be continued, so the next try starts clean.
+            return (false, $"{model.DisplayName} ({file.FileName}): download failed — the source changed; retry to download it afresh");
+        }
         catch (Exception ex)
         {
-            return (false, $"{model.DisplayName} ({file.FileName}): download failed — {ex.Message}");
+            keepPartial = true;
+            return (false, $"{model.DisplayName} ({file.FileName}): download failed — {ex.Message} (a retry continues where it stopped)");
         }
         finally
         {
-            try { if (File.Exists(partialPath)) File.Delete(partialPath); } catch { }
+            try { if (!keepPartial && File.Exists(partialPath)) File.Delete(partialPath); } catch { }
         }
     }
 
+    // Removes the model's files and any .partial a failed download left
+    // behind (the one way to drop a partial that can no longer be resumed).
     public bool Delete(string id)
     {
         var model = SttModelCatalog.Find(id);
@@ -219,6 +231,7 @@ public sealed class SttModelManager
             {
                 var path = PathFor(model, file);
                 if (File.Exists(path)) File.Delete(path);
+                if (File.Exists(path + ".partial")) File.Delete(path + ".partial");
             }
             if (model.Subdir.Length > 0)
             {

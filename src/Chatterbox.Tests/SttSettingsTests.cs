@@ -85,12 +85,52 @@ public class SttSettingsTests : IDisposable
     }
 
     [Fact]
+    public void ProvisionalRecovery_KeepsEveryPersistedFieldFromDisk()
+    {
+        // The translation and update settings used to be missing from the
+        // merge: a provisional boot silently reset them, then wrote the
+        // defaults over the file.
+        SttSettings.HasRunBeforeOverride = true;
+        var s = SttSettings.LoadWithRetry(TimeSpan.FromMilliseconds(200));
+        Assert.True(SttSettings.ProvisionalDefaults);
+        s.IntervalMs = 2000;                          // a change made meanwhile, to force the write-back
+        File.WriteAllText(_path, System.Text.Json.JsonSerializer.Serialize(new SttSettings
+        {
+            TranslateEnabled = true, TranslateTarget = "de", TranslateShowOriginal = true,
+            CheckUpdatesAtStartup = false, Engine = "whisper",
+        }));
+        Assert.True(s.TryRecoverFromDisk());
+        Assert.True(s.TranslateEnabled);
+        Assert.Equal("de", s.TranslateTarget);
+        Assert.True(s.TranslateShowOriginal);
+        Assert.False(s.CheckUpdatesAtStartup);
+        Assert.Equal("whisper", s.Engine);
+        var onDisk = SttSettings.Load();              // merged and written back, nothing reset
+        Assert.True(onDisk.TranslateEnabled);
+        Assert.Equal("de", onDisk.TranslateTarget);
+        Assert.True(onDisk.TranslateShowOriginal);
+        Assert.False(onDisk.CheckUpdatesAtStartup);
+        Assert.Equal(2000, onDisk.IntervalMs);
+
+        // And a choice made while provisional wins over the file, like every other field.
+        SttSettings.ResetForTests();
+        SttSettings.HasRunBeforeOverride = true;
+        File.Delete(_path);
+        var t = SttSettings.LoadWithRetry(TimeSpan.FromMilliseconds(200));
+        t.TranslateTarget = "fr";                     // not the default ("ja"): a real change
+        File.WriteAllText(_path, System.Text.Json.JsonSerializer.Serialize(new SttSettings { TranslateTarget = "de" }));
+        Assert.True(t.TryRecoverFromDisk());
+        Assert.Equal("fr", t.TranslateTarget);
+        Assert.Equal("fr", SttSettings.Load().TranslateTarget);
+    }
+
+    [Fact]
     public void GiveUpProvisional_FlushesPendingChanges()
     {
         SttSettings.HasRunBeforeOverride = true;
         var s = SttSettings.LoadWithRetry(TimeSpan.FromMilliseconds(200));
         s.Engine = "whisper";
-        s.Save();                                    // deferred
+        s.Save();                                    // not written while provisional
         Assert.False(File.Exists(_path));
         s.GiveUpProvisional();
         Assert.False(SttSettings.ProvisionalDefaults);
@@ -150,5 +190,17 @@ public class SttSettingsTests : IDisposable
         Assert.Equal("defaults (no settings file yet)", SttSettings.LastLoadSource);
         Assert.Empty(loaded.AutoStartFriends);
         Assert.False(File.Exists(ErrorLog.PathOverride!));
+    }
+
+    [Fact]
+    public void GivingUpProvisionalWritesTheDefaultsSoTheNextStartFindsAFile()
+    {
+        SttSettings.HasRunBeforeOverride = true;           // the marker says "ran before"
+        var s = SttSettings.LoadWithRetry(TimeSpan.Zero);   // but there is no file: provisional
+        Assert.True(SttSettings.ProvisionalDefaults);
+        s.GiveUpProvisional();
+        Assert.False(SttSettings.ProvisionalDefaults);
+        Assert.True(File.Exists(_path));
+        Assert.Equal("settings file", (SttSettings.Load(), SttSettings.LastLoadSource).LastLoadSource);
     }
 }

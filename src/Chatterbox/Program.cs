@@ -70,6 +70,11 @@ internal static class Program
         // data folder, an alternate VRChat log folder, and "treat VRChat as
         // running" so the auto-start path is exercised without the game.
         if (ArgValue(args, "--data-dir") is { } dataDir) SttPaths.DataDir = Path.GetFullPath(dataDir);
+        // Recorded before anything (the WebView2 profile, the error log,
+        // the boot sentinel) can create the folder: a data folder deleted
+        // to reset the app must read as a first run, not as a settings
+        // file that is momentarily invisible (SttSettings.LoadWithRetry).
+        SttSettings.DataDirExistedAtBoot = Directory.Exists(SttPaths.DataDir);
         // A fake "latest release" document standing in for the GitHub API.
         if (ArgValue(args, "--update-url") is { } updateUrl) AppUpdater.LatestReleaseUrlOverride = updateUrl;
         var vrchatLogDir = ArgValue(args, "--vrchat-log-dir");

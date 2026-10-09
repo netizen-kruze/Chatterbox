@@ -192,10 +192,13 @@ never transmitted anywhere, and so is its translation.
   limit is the floor), pick a smaller model, or add the GPU pack. Lag no
   longer grows with sentence length: once the earlier words of a long
   sentence are settled, Chatterbox re-transcribes only its recent seconds,
-  and audio is queued rather than dropped when a pass runs long. On the
-  CPU, Whisper runs a shortened encoder context for speed.
-- **Captions stopped on their own**: the mic was disconnected, or auto-stop
-  fired because the last watched player left.
+  and audio is queued when a pass runs long — up to one pass plus ten
+  seconds of it; beyond that the oldest audio is skipped so captions catch
+  up instead of lagging further. On the CPU, Whisper runs a shortened
+  encoder context for speed.
+- **Captions stopped on their own**: the mic was disconnected, a
+  recognition pass failed (the red toast says which), or auto-stop fired
+  because the last watched player left.
 - **Translation is on but the chatbox shows my own words**: the Translate
   tab's banner says what is missing — the translation model (1.1 GB) and
   the Translation engine both come from the Models screen. If both are
@@ -262,7 +265,17 @@ what it ran on.
   as nothing new was loaded in between. Now the downloaded exe is staged
   beside the running one, Chatterbox exits, and the staged exe does the
   swap itself (waiting for the old process and its WebView2 browser to be
-  gone) and then starts the new version.
+  gone) and then starts the new version. Also a round of stability work:
+  when recognition cannot keep up, audio beyond one pass plus ten seconds
+  is skipped instead of lagging further (`last_boot.log` says so); a
+  recognition pass that throws stops the session with "recognition failed
+  (…)" rather than captioning silence; Stop never frees the engine under a
+  running pass (disposal is deferred until it returns) and no longer
+  transcribes what is left in the window; Parakeet is handed at most 20 s
+  per pass; a model or GPU-pack download that fails on the network keeps
+  its partial file and the retry continues where it stopped; a settings
+  save that fails says so instead of a silent "Saved"; and a CPU without
+  AVX2 is named as the reason when the bundled Whisper build will not load.
 - **1.7.1** — the translator gets its own **Translate** tab on the left
   rail: install-status banner with an Open Models button, the switch, the
   language, "show the original too", and the last translation.

@@ -95,8 +95,10 @@ public sealed class PresenceWatcher : IDisposable
         // Boot catch-up: absorb the whole current file so the roster and
         // world reflect an in-progress session, but raise nothing — the
         // caller reconciles from GetCurrentPlayers() instead of replaying
-        // hours of history as live events.
-        Drain(live: false);
+        // hours of history as live events. A log that cannot be read is a
+        // Players-screen problem, never a failed start.
+        try { Drain(live: false); }
+        catch (Exception ex) { Say($"catch-up error: {ex.Message}"); }
         Say($"catch-up: {PlayerCount} player(s), world {CurrentWorldId ?? "none"}, file {Path.GetFileName(_logPath ?? "none")}");
 
         // A log alone can describe a session that already ended.
@@ -108,7 +110,20 @@ public sealed class PresenceWatcher : IDisposable
             _timer = new System.Threading.Timer(_ => PollOnce(), null, 1000, 1000);
     }
 
-    public void Stop() { _timer?.Dispose(); _timer = null; }
+    // Waits for a poll that is in flight (bounded), so no event reaches an
+    // owner that is being disposed right after this returns.
+    public void Stop()
+    {
+        var t = _timer;
+        _timer = null;
+        if (t == null) return;
+        try
+        {
+            using var done = new ManualResetEvent(false);
+            if (t.Dispose(done)) done.WaitOne(3000);
+        }
+        catch { t.Dispose(); }
+    }
     public void Dispose() { _disposed = true; Stop(); }
 
     internal void PollOnce()

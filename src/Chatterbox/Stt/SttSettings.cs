@@ -65,7 +65,6 @@ public class SttSettings
     public static bool ProvisionalDefaults { get; private set; }
     public static int LastLoadWaitMs { get; private set; }
     public static event Action? Recovered;
-    private bool _pendingWrite;
 
     // "Has this user run the app before?" lives outside the data folder so
     // it stays answerable when the folder itself is what's invisible.
@@ -96,13 +95,28 @@ public class SttSettings
 
     private static string SettingsPath => PathOverride ?? Path.Combine(SttPaths.DataDir, "stt_settings.json");
 
+    // Whether a settings file exists at all (the provisional-defaults logic
+    // treats "ran before, no file" as a file that is momentarily invisible).
+    public static bool FileExists => File.Exists(SettingsPath);
+
+    // Whether the data folder was there when the process started — the
+    // host records it first thing (Program), because the boot sentinel and
+    // the error log create the folder before the settings are loaded and
+    // would otherwise hide a folder the user deleted to reset the app.
+    // Unset (tests, or a host that never records it): looked up at load.
+    public static bool? DataDirExistedAtBoot { get; set; }
+
     // Load, waiting up to `budget` for a "missing" file to show up when this
     // user has run the app before (see ProvisionalDefaults). First runs
     // never wait.
     public static SttSettings LoadWithRetry(TimeSpan budget)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        bool ranBefore = HasRunBefore();
+        // "Ran before" only counts when the data folder itself existed at
+        // boot: a folder deleted to reset the app is a first run again, not
+        // a momentarily unmounted disk.
+        bool dataDirExisted = DataDirExistedAtBoot ?? Directory.Exists(Path.GetDirectoryName(SettingsPath)!);
+        bool ranBefore = HasRunBefore() && dataDirExisted;
         while (true)
         {
             var s = Load();
@@ -155,10 +169,13 @@ public class SttSettings
         foreach (var f in AutoStartFriends)
             if (!disk.AutoStartFriends.Any(d => d.Id == f.Id && d.Name == f.Name))
             { disk.AutoStartFriends.Add(f); changed = true; }
+        if (CheckUpdatesAtStartup != pristine.CheckUpdatesAtStartup) { disk.CheckUpdatesAtStartup = CheckUpdatesAtStartup; changed = true; }
+        if (TranslateEnabled != pristine.TranslateEnabled) { disk.TranslateEnabled = TranslateEnabled; changed = true; }
+        if (TranslateTarget != pristine.TranslateTarget) { disk.TranslateTarget = TranslateTarget; changed = true; }
+        if (TranslateShowOriginal != pristine.TranslateShowOriginal) { disk.TranslateShowOriginal = TranslateShowOriginal; changed = true; }
 
         CopyFrom(disk);
         ProvisionalDefaults = false;
-        _pendingWrite = false;
         LastLoadSource = "settings file (recovered after boot — it was not visible at start)";
         ErrorLog.WriteNote("SttSettings",
             $"settings file became readable after boot; reloaded ({AutoStartFriends.Count} auto-start player(s))" +
@@ -169,15 +186,19 @@ public class SttSettings
     }
 
     // Provisional state has lasted long enough to be trusted as real: the
-    // file is genuinely gone. Flush anything the user changed meanwhile.
+    // file is genuinely gone (or never existed — a first run that changed
+    // nothing). Write what we have, so the next start finds a file instead
+    // of waiting again.
     public void GiveUpProvisional()
     {
         if (!ProvisionalDefaults) return;
         ProvisionalDefaults = false;
         LastLoadSource = "defaults — settings file never became visible after boot";
-        if (_pendingWrite) Save();
+        Save();
     }
 
+    // Every persisted property — a new setting must be added here AND to
+    // the merge above, or a provisional boot silently drops it.
     private void CopyFrom(SttSettings o)
     {
         InputDeviceIndex = o.InputDeviceIndex; InputDeviceName = o.InputDeviceName;
@@ -185,12 +206,15 @@ public class SttSettings
         TypingIndicator = o.TypingIndicator; NameBoost = o.NameBoost;
         NewLineGapMs = o.NewLineGapMs; ClearGapMs = o.ClearGapMs;
         AutoStartEnabled = o.AutoStartEnabled; AutoStartFriends = o.AutoStartFriends;
+        CheckUpdatesAtStartup = o.CheckUpdatesAtStartup;
+        TranslateEnabled = o.TranslateEnabled; TranslateTarget = o.TranslateTarget;
+        TranslateShowOriginal = o.TranslateShowOriginal;
     }
 
     internal static void ResetForTests()
     {
         ProvisionalDefaults = false; _lastLoadMissing = false; LastLoadWaitMs = 0;
-        LastLoadSource = "not loaded"; HasRunBeforeOverride = null; Recovered = null;
+        LastLoadSource = "not loaded"; HasRunBeforeOverride = null; DataDirExistedAtBoot = null; Recovered = null;
     }
 
     public static SttSettings Load()
@@ -242,16 +266,19 @@ public class SttSettings
     // in and keeps the previous file as .bak. A process kill mid-write
     // (VRChat companion apps stop us with TerminateProcess) can therefore
     // never truncate the live file, and Load() always has a fallback.
-    public void Save()
+    // The last failure's reason ("" after a successful save) — a full disk
+    // or a read-only data folder must not be a silent "Saved".
+    public static string LastSaveError { get; private set; } = "";
+
+    public bool Save()
     {
         // Provisional defaults are never written: the real file may be
         // sitting right there, momentarily invisible. Recovery merges and
-        // flushes; GiveUpProvisional flushes if it never shows up.
+        // flushes; GiveUpProvisional writes what we have if it never shows up.
         if (ProvisionalDefaults)
         {
-            if (TryRecoverFromDisk()) return;
-            _pendingWrite = true;
-            return;
+            TryRecoverFromDisk();
+            return true;
         }
         try
         {
@@ -261,7 +288,14 @@ public class SttSettings
             File.WriteAllText(tmp, JsonSerializer.Serialize(this, OnDisk));
             if (File.Exists(path)) File.Replace(tmp, path, path + ".bak");
             else File.Move(tmp, path);
+            LastSaveError = "";
+            return true;
         }
-        catch (Exception ex) { ErrorLog.WriteEntry("SttSettings.Save", ex); }
+        catch (Exception ex)
+        {
+            LastSaveError = ex.Message;
+            ErrorLog.WriteEntry("SttSettings.Save", ex);
+            return false;
+        }
     }
 }

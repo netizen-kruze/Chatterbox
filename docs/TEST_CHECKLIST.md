@@ -161,6 +161,33 @@ away (restore after this section).
 - [ ] Tray icon clicked in the first second after launch (before the
       window exists) → nothing happens, no crash.
 
+## Stability
+
+- [ ] **Microphone lost mid-session** (unplug the USB mic): within a few
+      seconds a red "Captions stopped — microphone capture failed (…)" toast;
+      Start works again; an auto-started session restarts by itself about
+      5 s later on the input Windows now treats as the default
+      (`last_boot.log`: "auto-started captions stopped (…); presence
+      recheck armed to bring them back").
+- [ ] **Engine pass throws** (no by-hand trigger — the unit test
+      AWorkerExceptionIsReportedNotSwallowed covers the path; if it ever
+      happens live): the session stops with the red "Captions stopped —
+      recognition failed (...)" toast instead of staying "running" in
+      silence, and Start works again.
+- [ ] **Stop during a long pass** on a slow CPU (Parakeet): the app never
+      crashes; `last_boot.log` may say "engine disposal deferred".
+- [ ] **Sustained overload** (large model on a weak CPU): captions lag but
+      never more than roughly window + 10 s; `last_boot.log` shows
+      `skipped N s of audio to catch up` rather than minutes of lag.
+- [ ] **Download retry continues where it stopped**: disconnect the network
+      in the middle of a model (or GPU pack) download → the failure toast
+      ends in "(a retry continues where it stopped)" and the `.partial`
+      (or `.download`) file stays; reconnect, download again → the progress
+      bar starts where it left off and the file verifies. Cancel instead →
+      the partial file is removed.
+- [ ] **Settings folder read-only or disk full**: changing a setting shows
+      a red "Settings could not be saved — …" toast instead of "Saved".
+
 ## F. Portable zip (ideally on the second machine)
 
 - [ ] Unzip `Chatterbox-<version>-win-x64.zip` to a user folder → a single

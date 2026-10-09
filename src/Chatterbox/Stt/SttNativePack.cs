@@ -33,7 +33,7 @@ public sealed class SttNativePack
     private readonly string _archivePrefix;
     private readonly PackFile[] _files;
 
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(30) }) { Timeout = Timeout.InfiniteTimeSpan };
 
     public static void SetUserAgent(string ua) =>
         Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", ua);

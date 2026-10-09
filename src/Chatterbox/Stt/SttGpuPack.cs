@@ -40,7 +40,9 @@ public static class SttGpuPack
         ("whisper.dll", 484_864, "ef73371ba9d1ef0ab94316907cd50b9cbec5dd0829b89ba6f3dc19871c32f40a"),
     };
 
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    // A connect that never answers gives up after 30 s; a transfer that
+    // stalls is cut by SttDownload's idle timeout, never by a total one.
+    private static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(30) }) { Timeout = Timeout.InfiniteTimeSpan };
 
     // Identifies the app to the download host — see SttModelManager.SetUserAgent.
     public static void SetUserAgent(string ua) =>
@@ -56,30 +58,37 @@ public static class SttGpuPack
         Files.All(f => new FileInfo(Path.Combine(InstallDir, f.Name)) is { Exists: true } fi && fi.Length == f.Size);
 
     // (receivedBytes, totalBytes) progress against the nupkg download.
+    // The archive is staged in the install folder itself, not the temp
+    // folder, so it sits on the drive the extraction needs anyway. A
+    // network failure keeps the staged file so the next attempt resumes it
+    // (SttDownload.ResumableDownloadAsync); a bad hash or a cancel drops it.
     public static async Task<(bool Ok, string? Error)> DownloadAsync(
         Action<long, long> onProgress, CancellationToken ct = default)
     {
-        var tempNupkg = Path.Combine(Path.GetTempPath(), $"chatterbox-gpu-pack-{Guid.NewGuid():N}.nupkg");
+        var tempNupkg = Path.Combine(InstallDir, Id + ".download");
+        // A folder that cannot be made or a full drive is not a download
+        // failure: nothing was fetched, so no "retry continues" promise.
         try
         {
-            using (var response = await Http.GetAsync(NupkgUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            Directory.CreateDirectory(InstallDir);
+            SttDownload.EnsureFreeSpace(InstallDir, NupkgSizeBytes + Files.Sum(f => f.Size) + 64_000_000);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"GPU pack: {ex.Message}");
+        }
+        bool keepTemp = false;
+        try
+        {
+            using (var sha = SHA256.Create())
             {
-                response.EnsureSuccessStatusCode();
-                SttDownload.EnsureFreeSpace(Path.GetTempPath(), NupkgSizeBytes);
-                SttDownload.EnsureFreeSpace(InstallDir, NupkgSizeBytes * 2);
-                using var sha = SHA256.Create();
-                await using (var source = await response.Content.ReadAsStreamAsync(ct))
-                await using (var target = File.Create(tempNupkg))
-                {
-                    await SttDownload.CopyAsync(source, target, sha, received => onProgress(received, NupkgSizeBytes), ct);
-                }
-
+                long received = await SttDownload.ResumableDownloadAsync(Http, NupkgUrl, tempNupkg, NupkgSizeBytes, sha,
+                    got => onProgress(got, NupkgSizeBytes), ct);
                 var hash = Convert.ToHexString(sha.Hash!).ToLowerInvariant();
-                if (hash != NupkgSha256)
+                if (received != NupkgSizeBytes || hash != NupkgSha256)
                     return (false, "GPU pack: package SHA-256 mismatch — download corrupt or source changed");
             }
 
-            Directory.CreateDirectory(InstallDir);
             using (var zip = ZipFile.OpenRead(tempNupkg))
             {
                 foreach (var file in Files)
@@ -109,11 +118,12 @@ public static class SttGpuPack
         }
         catch (Exception ex)
         {
-            return (false, $"GPU pack: download failed — {ex.Message}");
+            keepTemp = true;
+            return (false, $"GPU pack: download failed — {ex.Message} (a retry continues where it stopped)");
         }
         finally
         {
-            try { if (File.Exists(tempNupkg)) File.Delete(tempNupkg); } catch { }
+            try { if (!keepTemp && File.Exists(tempNupkg)) File.Delete(tempNupkg); } catch { }
         }
     }
 
@@ -133,15 +143,21 @@ public static class SttGpuPack
         return (ok, bad);
     }
 
+    // Removes every pack file, any staged or half-extracted leftover, and the
+    // folder itself when nothing else is in it.
     public static bool Delete()
     {
         try
         {
+            if (!Directory.Exists(InstallDir)) return true;
             foreach (var f in Files)
             {
                 var path = Path.Combine(InstallDir, f.Name);
                 if (File.Exists(path)) File.Delete(path);
             }
+            foreach (var pattern in new[] { "*.partial", "*.download" })
+                foreach (var stray in Directory.EnumerateFiles(InstallDir, pattern)) File.Delete(stray);
+            if (!Directory.EnumerateFileSystemEntries(InstallDir).Any()) Directory.Delete(InstallDir);
             return true;
         }
         catch { return false; }

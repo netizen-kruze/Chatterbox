@@ -30,9 +30,9 @@ public interface IVadSegmenter
 //
 // Falling behind: when a pass runs long, everything captured meanwhile waits
 // in the queue. The worker takes all of it before the next decision, so one
-// VAD tick and one pass cover the backlog instead of several partial ones,
-// and the queue holds a full minute so nothing is dropped short of a
-// hopeless stall.
+// VAD tick and one pass cover the backlog instead of several partial ones.
+// Past one window plus MaxLagMs of backlog the oldest audio is let go of
+// instead (load shedding — Shed): no later pass could caption it in time.
 public sealed class SttPipeline : IDisposable
 {
     public int UtteranceEndSilenceMs { get; init; } = 700;
@@ -58,6 +58,17 @@ public sealed class SttPipeline : IDisposable
     public event Action<SttPassInfo>? OnPass;
     // (trimmed ms, window ms afterwards) — one per trim, for logs and tests.
     public event Action<int, int>? OnTrim;
+    // Seconds of audio let go of to catch up (load shedding), one per shed.
+    public event Action<int>? OnShed;
+    // The worker died on an exception: the session cannot continue and the
+    // owner must wind it down — silence here would look like a working
+    // session that never hears anything.
+    public event Action<Exception>? OnWorkerFailed;
+
+    // Past the longest pass plus this much backlog, audio is dropped rather
+    // than queued: every later pass would only get slower and nothing
+    // queued would ever be captioned in time.
+    public int MaxLagMs { get; init; } = 10_000;
 
     private readonly ISttEngine _engine;
     private readonly IVadSegmenter _vad;
@@ -66,6 +77,8 @@ public sealed class SttPipeline : IDisposable
     private Channel<byte[]>? _channel;
     private CancellationTokenSource? _cts;
     private Task? _worker;
+    private Task? _lastWorker;
+    private volatile bool _stopRequested;
 
     private readonly byte[] _window;
     private int _windowBytes;
@@ -84,7 +97,7 @@ public sealed class SttPipeline : IDisposable
         _window = new byte[SttAudio.MsToBytes((MaxUtteranceSeconds + 62) * 1000)];
     }
 
-    public bool IsRunning => _worker != null;
+    public bool IsRunning => _worker is { IsCompleted: false };
 
     public void Start()
     {
@@ -94,6 +107,7 @@ public sealed class SttPipeline : IDisposable
         _bytesSinceVad = 0;
         _bytesSinceInfer = 0;
         _speechActive = false;
+        _stopRequested = false;
         // The engine may cap what one pass can be handed (Whisper on the
         // CPU runs a shortened encoder context).
         _maxWindowMs = MaxUtteranceSeconds * 1000;
@@ -114,14 +128,17 @@ public sealed class SttPipeline : IDisposable
     // Called from the capture callback thread; never blocks.
     public void Push(byte[] chunk) => _channel?.Writer.TryWrite(chunk);
 
-    public void Stop()
+    // Returns false when the worker is still inside a pass after the wait:
+    // the owner must then defer disposing the engine and VAD (RunAfterWorker).
+    public bool Stop()
     {
-        if (_worker == null) return;
+        if (_worker == null) return true;
 
         // The worker must be fully joined before anyone disposes the engine
         // or VAD — a lingering worker calling into freed native contexts
-        // corrupts the process. Complete the channel so it drains and flushes,
-        // then cancel as a backstop.
+        // corrupts the process. Ask it to stop ticking, complete the channel
+        // so it drains and flushes, then cancel as a backstop.
+        _stopRequested = true;
         _channel?.Writer.TryComplete();
         bool exited;
         try { exited = _worker.Wait(10_000); } catch { exited = true; }
@@ -140,8 +157,19 @@ public sealed class SttPipeline : IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
+        _lastWorker = _worker;
         _worker = null;
         _channel = null;
+        return exited;
+    }
+
+    // Runs work once the last worker has really returned — now if it has,
+    // else right after it does. For freeing what it may still be inside of.
+    public void RunAfterWorker(Action work)
+    {
+        var w = _lastWorker;
+        if (w == null || w.IsCompleted) { work(); return; }
+        w.ContinueWith(_ => work(), TaskScheduler.Default);
     }
 
     private async Task WorkerLoopAsync(ChannelReader<byte[]> reader, CancellationToken ct)
@@ -155,23 +183,53 @@ public sealed class SttPipeline : IDisposable
                 // Catch-up: whatever arrived while the last pass ran is
                 // taken now, so one tick and one pass cover the backlog.
                 while (reader.TryRead(out var more)) Take(more);
+                if (_stopRequested) continue;   // drain only; the flush below is the last pass
+                Shed();
                 if (_bytesSinceVad >= vadTickBytes)
                 {
                     _bytesSinceVad = 0;
                     await TickAsync(ct);
                 }
             }
-
-            // Channel completed (Stop): flush whatever speech is still buffered.
-            if (_speechActive && _windowBytes > 0)
-                await FinalizeUtteranceAsync(_windowBytes, _windowBytes, ct);
+            // Channel completed — that is Stop: whatever speech is still in
+            // the window is NOT transcribed. Its text would only reach the
+            // chatbox relay, which the owner clears right after Stop
+            // returns, so the pass was seconds of pure wait (and the usual
+            // reason an engine had to be freed late).
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             OnLog?.Invoke($"STT pipeline error: {ex.Message}");
             ErrorLog.WriteEntry("SttPipeline.WorkerLoop", ex);
+            // Raised off this task: the owner's handler calls Stop(), which
+            // joins the worker — from inside the worker that wait could
+            // only time out (15 s with the session lock held, and a false
+            // "did not exit in time" in error.log).
+            if (!_stopRequested && OnWorkerFailed is { } failed)
+                _ = Task.Run(() => failed(ex));
         }
+    }
+
+    // Load shedding: a pass can only ever cover _maxWindowMs, so audio
+    // beyond that plus MaxLagMs would make every later pass slower without
+    // ever being captioned in time. Keep the newest window's worth, emit
+    // the words already agreed on, and say so.
+    private void Shed()
+    {
+        int limit = SttAudio.MsToBytes(_maxWindowMs + MaxLagMs);
+        if (_windowBytes <= limit) return;
+        int keep = SttAudio.MsToBytes(_maxWindowMs);
+        int dropped = _windowBytes - keep;
+        var committed = _agreement.Committed;
+        if (committed.Length > 0) OnFinal?.Invoke(committed);
+        _agreement.Reset();
+        Buffer.BlockCopy(_window, dropped, _window, 0, keep);
+        _windowBytes = keep;
+        _bytesSinceInfer = 0;
+        int seconds = Math.Max(1, dropped / SttAudio.MsToBytes(1000));
+        OnShed?.Invoke(seconds);
+        OnLog?.Invoke($"[STT] skipped {seconds} s of audio to catch up — recognition is slower than real time");
     }
 
     private void Take(byte[] chunk)
@@ -332,7 +390,7 @@ public sealed class SttPipeline : IDisposable
     // it took, how much audio it covered, how much of that was new since
     // the previous pass, and how much captured audio was already queued
     // behind it when it finished (the lag a listener notices).
-    private async Task<SttTranscript> TranscribeWindowAsync(int lengthBytes, CancellationToken ct)
+    private async Task<SttTranscript> TranscribeWindowAsync(int lengthBytes, CancellationToken ct, bool final = false)
     {
         int newAudio = _bytesSinceInfer;
         _bytesSinceInfer = 0;
@@ -344,7 +402,7 @@ public sealed class SttPipeline : IDisposable
             int bytesPerMs = SttAudio.MsToBytes(1);
             int chunkMs = Math.Max(1, _lastChunkBytes / bytesPerMs);
             int backlogMs = (_channel?.Reader.Count ?? 0) * chunkMs;
-            OnPass(new SttPassInfo((int)sw.ElapsedMilliseconds, lengthBytes / bytesPerMs, newAudio / bytesPerMs, backlogMs));
+            OnPass(new SttPassInfo((int)sw.ElapsedMilliseconds, lengthBytes / bytesPerMs, newAudio / bytesPerMs, backlogMs, final));
         }
         return result;
     }
@@ -353,7 +411,15 @@ public sealed class SttPipeline : IDisposable
     // starts the next window with the audio after consumedBytes.
     private async Task FinalizeUtteranceAsync(int transcribeBytes, int consumedBytes, CancellationToken ct)
     {
-        var final = await TranscribeWindowAsync(transcribeBytes, ct);
+        // Never hand the engine more than one pass can hold: the part beyond
+        // the cap stays as the next window instead of stretching this pass.
+        int cap = SttAudio.MsToBytes(_maxWindowMs);
+        if (transcribeBytes > cap)
+        {
+            transcribeBytes = cap;
+            consumedBytes = Math.Min(consumedBytes, cap);
+        }
+        var final = await TranscribeWindowAsync(transcribeBytes, ct, final: true);
         _agreement.Finalize(final.Text);
         var text = _agreement.Committed;
         if (text.Length > 0) OnFinal?.Invoke(text);

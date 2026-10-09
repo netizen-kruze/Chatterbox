@@ -40,7 +40,7 @@ public static class SttEnginePack
         ("sherpa-onnx-c-api.dll", 4_590_592, "eb94a15429dcb830374e0ae5c9e646f98985c67dd7eff9e8b802439ec4ea9388"),
     };
 
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(30) }) { Timeout = Timeout.InfiniteTimeSpan };
 
     public static void SetUserAgent(string ua) =>
         Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", ua);

@@ -60,6 +60,7 @@ public sealed class SileroVadSegmenter : IVadSegmenter, IDisposable
         {
             Dispose();
             error = $"Silero VAD load failed: {ex.Message}";
+            error += WhisperNetEngine.AvxNote();
             return false;
         }
     }

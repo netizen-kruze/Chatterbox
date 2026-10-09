@@ -197,8 +197,12 @@ public sealed class SttChatboxRelay : IDisposable
 
         if (!TypingIndicator) return;
         _osc.SendTyping(active);
-        _typingPulse?.Change(active ? TypingPulseMs : Timeout.Infinite,
-                             active ? TypingPulseMs : Timeout.Infinite);
+        try
+        {
+            _typingPulse?.Change(active ? TypingPulseMs : Timeout.Infinite,
+                                 active ? TypingPulseMs : Timeout.Infinite);
+        }
+        catch (ObjectDisposedException) { } // Stop() raced a speech-state change
     }
 
     public void Dispose()

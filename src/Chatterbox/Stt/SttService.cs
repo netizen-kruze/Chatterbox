@@ -12,9 +12,11 @@ public sealed class SttService : IDisposable
     public event Action<string>? OnFinal;
     public event Action<bool>? OnSpeechActive;
     public event Action<SttPassInfo>? OnPass;        // per recognition pass (pace)
-    // The capture died mid-session (device unplugged, driver failure);
-    // IsRunning is NOT changed here — the owner decides how to wind down.
-    public event Action<string?>? OnCaptureFailed;
+    // The session died mid-way — the capture (device unplugged, driver
+    // failure) or the recognition worker (an engine pass threw); the
+    // reason is a full sentence. IsRunning is NOT changed here — the owner
+    // decides how to wind down.
+    public event Action<string>? OnSessionFailed;
 
     private readonly SttCaptureService _capture = new();
     private SttPipeline? _pipeline;
@@ -86,6 +88,7 @@ public sealed class SttService : IDisposable
         _pipeline.OnSpeechActive += active => OnSpeechActive?.Invoke(active);
         _pipeline.OnPass += p => OnPass?.Invoke(p);
         _pipeline.OnLog += s => OnLog?.Invoke(s);
+        _pipeline.OnWorkerFailed += ex => OnSessionFailed?.Invoke($"recognition failed ({ex.Message})");
 
         _capture.OnChunk += OnCaptureChunk;
         _capture.OnLog += OnCaptureLog;
@@ -120,12 +123,28 @@ public sealed class SttService : IDisposable
         _capture.OnChunk -= OnCaptureChunk;
         _capture.OnLog -= OnCaptureLog;
 
-        _pipeline?.Stop();
-        _pipeline = null;
-        _vad?.Dispose();
-        _vad = null;
-        _engine?.Dispose();
-        _engine = null;
+        bool workerExited = _pipeline?.Stop() ?? true;
+        var pipeline = _pipeline; _pipeline = null;
+        var vad = _vad; _vad = null;
+        var engine = _engine; _engine = null;
+        if (workerExited || pipeline == null)
+        {
+            vad?.Dispose();
+            engine?.Dispose();
+        }
+        else
+        {
+            // The worker is still inside a native pass: freeing the engine
+            // under it would corrupt the process. Both are freed the moment
+            // the worker returns (or stay allocated if it never does —
+            // better than a crash).
+            OnLog?.Invoke("[STT] engine disposal deferred until the running recognition pass returns");
+            pipeline.RunAfterWorker(() =>
+            {
+                try { vad?.Dispose(); } catch { }
+                try { engine?.Dispose(); } catch { }
+            });
+        }
 
         if (IsRunning) OnLog?.Invoke("[STT] stopped");
         IsRunning = false;
@@ -133,7 +152,8 @@ public sealed class SttService : IDisposable
 
     private void OnCaptureChunk(byte[] chunk) => _pipeline?.Push(chunk);
     private void OnCaptureLog(string msg) => OnLog?.Invoke(msg);
-    private void OnCaptureStopped(Exception? ex) => OnCaptureFailed?.Invoke(ex?.Message);
+    private void OnCaptureStopped(Exception? ex) =>
+        OnSessionFailed?.Invoke($"microphone capture failed ({ex?.Message ?? "device lost"})");
 
     public void Dispose() => Stop();
 }

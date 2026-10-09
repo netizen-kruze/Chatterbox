@@ -6,7 +6,9 @@ namespace Chatterbox.Stt;
 // engine took, how much audio the pass covered, how much of that was new
 // since the previous pass, and how much captured audio was already
 // waiting behind it when it finished.
-public readonly record struct SttPassInfo(int PassMs, int WindowMs, int NewAudioMs, int BacklogMs);
+// Final = the utterance-closing pass, which covers a whole utterance after
+// only a few hundred ms of new audio: it counts for lag, not for load.
+public readonly record struct SttPassInfo(int PassMs, int WindowMs, int NewAudioMs, int BacklogMs, bool Final = false);
 
 // Is recognition keeping up with speech? Two numbers, both smoothed:
 //  load = pass time ÷ the real time that pass had to fit in (the audio
@@ -52,8 +54,11 @@ public sealed class SttPaceMonitor
         if (pass.PassMs > MaxPassMs) MaxPassMs = pass.PassMs;
         if (pass.BacklogMs > MaxLagMs) MaxLagMs = pass.BacklogMs;
 
-        double load = pass.PassMs / (double)Math.Max(pass.NewAudioMs, MinBudgetMs);
-        _load = _load < 0 ? load : _load + Smoothing * (load - _load);
+        if (!pass.Final)
+        {
+            double load = pass.PassMs / (double)Math.Max(pass.NewAudioMs, MinBudgetMs);
+            _load = _load < 0 ? load : _load + Smoothing * (load - _load);
+        }
         _lag = _lag < 0 ? pass.BacklogMs : _lag + Smoothing * (pass.BacklogMs - _lag);
         if (_load > MaxLoad) MaxLoad = _load;
 

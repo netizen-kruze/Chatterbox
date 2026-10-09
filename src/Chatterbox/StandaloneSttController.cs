@@ -18,8 +18,38 @@ public sealed class StandaloneSttController : IDisposable
 
     private SttService? _service;
     private SttChatboxRelay? _relay;
+    // The one download slot the Models screen shows (progress bar, Cancel).
+    // Claimed and released under a lock: the boot-time voice-detector
+    // fetch runs on a pool thread while the page's downloads run on the
+    // window thread, and a finishing download must only free its own slot.
+    private readonly object _downloadGate = new();
     private CancellationTokenSource? _downloadCts;
     private string? _downloadingId;
+
+    private bool TryClaimDownload(string id, out CancellationToken ct)
+    {
+        lock (_downloadGate)
+        {
+            if (_downloadingId != null) { ct = CancellationToken.None; return false; }
+            _downloadingId = id;
+            _downloadCts = new CancellationTokenSource();
+            ct = _downloadCts.Token;
+            return true;
+        }
+    }
+
+    private void ReleaseDownload(string id)
+    {
+        CancellationTokenSource? cts;
+        lock (_downloadGate)
+        {
+            if (_downloadingId != id) return;   // not ours any more
+            _downloadingId = null;
+            cts = _downloadCts;
+            _downloadCts = null;
+        }
+        cts?.Dispose();
+    }
     private long _lastProgressSentAt;
     private bool _autoStarted;
     private bool _manualHold;
@@ -29,7 +59,8 @@ public sealed class StandaloneSttController : IDisposable
     private readonly object _settingsLock = new();
     // Session lifecycle (Start/Stop and their check-then-act callers) runs on
     // four threads: the UI message path, the watcher poll timer, the recheck
-    // timer, and the NAudio callback (capture failure). Serialize it — two
+    // timer, and the session-failure path (the NAudio callback on a capture
+    // failure, the pipeline worker on an engine failure). Serialize it — two
     // concurrent starts would orphan a live mic capture. Monitor is
     // re-entrant, so Start()->Stop() nesting is fine. Lock order: session
     // outer, settings inner (never the reverse).
@@ -45,6 +76,9 @@ public sealed class StandaloneSttController : IDisposable
     private long _lastPaceSentAt;
     private SttPaceMonitor.PaceStatus _lastPaceStatus;
     private bool _paceBehindLogged;
+    // The "falling behind" boot-log line is written at most once a minute:
+    // a status that flips Behind/KeepingUp repeatedly must not grow the log.
+    private long _lastPaceLogAt;
     private long _sessionStartedAt;
     // An engine load in progress: Start runs off the UI thread and the UI
     // shows "Loading" instead of a frozen window.
@@ -73,23 +107,36 @@ public sealed class StandaloneSttController : IDisposable
     // the file is genuinely gone.
     private void ProvisionalRecheckTick()
     {
-        bool recovered = false, gaveUp = false;
-        lock (_sessionLock)
-        lock (_settingsLock)
+        // A timer callback: an exception here is a process crash.
+        try
         {
-            if (_settings.TryRecoverFromDisk()) recovered = true;
-            else if (Environment.TickCount64 - _provisionalSince > ProvisionalGiveUpMs)
+            bool recovered = false, gaveUp = false;
+            lock (_sessionLock)
+            lock (_settingsLock)
             {
-                _settings.GiveUpProvisional();
-                gaveUp = true;
+                if (_settings.TryRecoverFromDisk()) recovered = true;
+                else if (Environment.TickCount64 - _provisionalSince > ProvisionalGiveUpMs)
+                {
+                    _settings.GiveUpProvisional();
+                    gaveUp = true;
+                }
             }
+            if (recovered || gaveUp)
+            {
+                _provisionalRecheck?.Dispose();
+                _provisionalRecheck = null;
+            }
+            if (gaveUp) BootLog.Append("settings: file never became visible; running on defaults");
         }
-        if (recovered || gaveUp)
-        {
-            _provisionalRecheck?.Dispose();
-            _provisionalRecheck = null;
-        }
-        if (gaveUp) BootLog.Append("settings: file never became visible; running on defaults");
+        catch (Exception ex) { ErrorLog.WriteEntry("ProvisionalRecheck", ex); }
+    }
+
+    private void SendSavedToast()
+    {
+        var error = SttSettings.LastSaveError;
+        _send("toast", error.Length == 0
+            ? new { ok = true, msg = "Saved" }
+            : new { ok = false, msg = "Settings could not be saved — " + error + " (this session keeps them; the next start will not)" });
     }
 
     private void OnSettingsRecovered()
@@ -100,7 +147,10 @@ public sealed class StandaloneSttController : IDisposable
         SendState();
         SendPlayers();
         _send("toast", new { ok = true, msg = "Settings loaded — they weren't readable when Chatterbox started" });
-        ReconcileAutoPresence();
+        // Recovery can be raised from inside Save(), under the settings
+        // lock; the presence reconcile takes the session lock, which is
+        // always the OUTER one — so it runs on its own thread, later.
+        RunOffUiThread(ReconcileAutoPresence);
     }
 
     public bool IsRunning => _service?.IsRunning ?? false;
@@ -176,6 +226,12 @@ public sealed class StandaloneSttController : IDisposable
             _send("toast", new { ok = false, msg =
                 "Chatterbox didn't start cleanly last time, so captions were not auto-started this time — " +
                 @"press Start when ready. Details: %APPDATA%\Chatterbox\error.log" });
+        // A first run that never touches a setting would otherwise make every
+        // later launch wait for a "missing" settings file (the provisional-
+        // defaults logic assumes a returning user has one). Write the defaults
+        // once the page is up, so the next start finds a real file.
+        lock (_settingsLock)
+            if (!SttSettings.ProvisionalDefaults && !SttSettings.FileExists) _settings.Save();
         RunBootReconcile("page connected");
         // The optional startup check waits for the boot work (auto-start,
         // the voice detector) to settle first.
@@ -237,21 +293,10 @@ public sealed class StandaloneSttController : IDisposable
         // Shown on the Models screen like any download (progress, Cancel)
         // when the slot is free; a download the user already has running
         // keeps the slot and this one runs quietly beside it.
-        CancellationTokenSource? cts = null;
-        if (_downloadingId == null)
-        {
-            cts = new CancellationTokenSource();
-            _downloadingId = vad.Id;
-            _downloadCts = cts;
-            SendModels();
-        }
-        var (ok, error) = await _models.DownloadAsync(vad.Id, cts?.Token ?? CancellationToken.None);
-        if (cts != null)
-        {
-            _downloadingId = null;
-            _downloadCts = null;
-            cts.Dispose();
-        }
+        bool slot = TryClaimDownload(vad.Id, out var ct);
+        if (slot) SendModels();
+        var (ok, error) = await _models.DownloadAsync(vad.Id, ct);
+        if (slot) ReleaseDownload(vad.Id);
         if (ok)
         {
             var removed = _models.RemoveStaleVadFiles();
@@ -590,8 +635,13 @@ public sealed class StandaloneSttController : IDisposable
 
     private void AutoRecheckTick()
     {
-        ReconcileAutoPresence();
-        if (_autoRecheckPhase++ == 0) TryArmRecheck(10_000);
+        // A timer callback that throws takes the process down.
+        try
+        {
+            ReconcileAutoPresence();
+            if (_autoRecheckPhase++ == 0) TryArmRecheck(10_000);
+        }
+        catch (Exception ex) { ErrorLog.WriteEntry("AutoRecheckTick", ex); }
     }
 
     private void ReconcileAutoPresence()
@@ -657,7 +707,7 @@ public sealed class StandaloneSttController : IDisposable
                     _settings.Save();
                 }
                 SendUpdateState(_updateState);
-                _send("toast", new { ok = true, msg = "Saved" });
+                SendSavedToast();
                 break;
 
             // Settings > About: the license documents live inside the
@@ -872,30 +922,34 @@ public sealed class StandaloneSttController : IDisposable
                         _settings.Save();
                     }
 
-                    if (_relay != null)
+                    // The relay belongs to the session: touch it under the
+                    // session lock, and never wait for that lock on the
+                    // window thread (an engine load may hold it for seconds).
+                    RunOffUiThread(() =>
                     {
-                        _relay.TypingIndicator = _settings.TypingIndicator;
-                        _relay.NewLineGapMs = _settings.NewLineGapMs;   // applies live
-                        _relay.ClearGapMs = _settings.ClearGapMs;
-                        if (_relay.IntervalMs != _settings.IntervalMs && _service != null)
+                        lock (_sessionLock)
                         {
-                            _relay.Stop();
-                            _relay.IntervalMs = _settings.IntervalMs;
-                            _relay.Start();
+                            if (_relay == null) return;
+                            _relay.TypingIndicator = _settings.TypingIndicator;
+                            _relay.NewLineGapMs = _settings.NewLineGapMs;   // applies live
+                            _relay.ClearGapMs = _settings.ClearGapMs;
+                            if (_relay.IntervalMs != _settings.IntervalMs && _service != null)
+                            {
+                                _relay.Stop();
+                                _relay.IntervalMs = _settings.IntervalMs;
+                                _relay.Start();
+                            }
+                            _relay.ShowOriginal = _settings.TranslateShowOriginal;   // target is read live
+                            if (_settings.TranslateEnabled != (_relay.Translator != null))
+                                AttachTranslator();                                  // a model load: already off the window thread
                         }
-                    }
-                    if (_relay != null)
-                    {
-                        _relay.ShowOriginal = _settings.TranslateShowOriginal;   // target is read live
-                        if (_settings.TranslateEnabled != (_relay.Translator != null))
-                            RunOffUiThread(AttachTranslator);                    // a model load: never on the window thread
-                    }
+                    });
                     // The UI renders settings state only from these payloads —
                     // without the refresh a changed engine looks unselectable.
                     RefreshNameFilter();
                     SendDevices();
                     SendModels();
-                    _send("toast", new { ok = true, msg = "Saved" });
+                    SendSavedToast();
                 }
                 break;
 
@@ -908,7 +962,7 @@ public sealed class StandaloneSttController : IDisposable
                         _settings.InputDeviceName = SttAudioDevices.InputNameAt(devIdx);
                         _settings.Save();
                     }
-                    _send("toast", new { ok = true, msg = "Saved" });
+                    SendSavedToast();
                     RunOffUiThread(() =>
                     {
                         lock (_sessionLock)
@@ -952,8 +1006,12 @@ public sealed class StandaloneSttController : IDisposable
                     }
                     SendDevices();
 
-                    _manualHold = false;
-                    TryAutoStartFromPresence();
+                    // A session start loads a model: never on the window thread.
+                    RunOffUiThread(() =>
+                    {
+                        _manualHold = false;
+                        TryAutoStartFromPresence();
+                    });
                 }
                 break;
 
@@ -1017,7 +1075,20 @@ public sealed class StandaloneSttController : IDisposable
             case "sttDownloadModel":
                 {
                     var id = msg["id"]?.ToString() ?? "";
-                    if (_downloadingId != null)
+                    if (id.Length == 0) break;
+                    // The voice detector takes the shared path: the boot
+                    // check may already be fetching it, and the same file
+                    // must never download twice at once.
+                    if (id == SttModelCatalog.VadId)
+                    {
+                        _ = EnsureVadAsync();
+                        SendModels();
+                        break;
+                    }
+                    var info = SttModelCatalog.Find(id);
+                    var pack = SttTranslatePacks.Find(id);
+                    if (id != SttEnginePack.Id && id != SttGpuPack.Id && pack == null && info == null) break;
+                    if (!TryClaimDownload(id, out var dlCt))
                     {
                         _send("toast", new { ok = false, msg = "A model download is already running" });
                         break;
@@ -1025,9 +1096,7 @@ public sealed class StandaloneSttController : IDisposable
 
                     if (id == SttEnginePack.Id)
                     {
-                        _downloadingId = id;
-                        _downloadCts = new CancellationTokenSource();
-                        var engCt = _downloadCts.Token;
+                        var engCt = dlCt;
                         SendModels();
                         _ = Task.Run(async () =>
                         {
@@ -1038,9 +1107,7 @@ public sealed class StandaloneSttController : IDisposable
                                 _lastProgressSentAt = now;
                                 _send("sttModelProgress", new { id, received, total });
                             }, engCt);
-                            _downloadingId = null;
-                            _downloadCts?.Dispose();
-                            _downloadCts = null;
+                            ReleaseDownload(id);
                             _send("toast", ok
                                 ? new { ok = true, msg = "Parakeet engine installed" }
                                 : new { ok = false, msg = error ?? "download failed" });
@@ -1052,9 +1119,7 @@ public sealed class StandaloneSttController : IDisposable
 
                     if (id == SttGpuPack.Id)
                     {
-                        _downloadingId = id;
-                        _downloadCts = new CancellationTokenSource();
-                        var gpuCt = _downloadCts.Token;
+                        var gpuCt = dlCt;
                         SendModels();
                         _ = Task.Run(async () =>
                         {
@@ -1065,9 +1130,7 @@ public sealed class StandaloneSttController : IDisposable
                                 _lastProgressSentAt = now;
                                 _send("sttModelProgress", new { id, received, total });
                             }, gpuCt);
-                            _downloadingId = null;
-                            _downloadCts?.Dispose();
-                            _downloadCts = null;
+                            ReleaseDownload(id);
                             _send("toast", ok
                                 ? new { ok = true, msg = "GPU acceleration installed — restart Chatterbox to activate it" }
                                 : new { ok = false, msg = error ?? "download failed" });
@@ -1076,11 +1139,9 @@ public sealed class StandaloneSttController : IDisposable
                         break;
                     }
 
-                    if (SttTranslatePacks.Find(id) is { } pack)
+                    if (pack != null)
                     {
-                        _downloadingId = id;
-                        _downloadCts = new CancellationTokenSource();
-                        var packCt = _downloadCts.Token;
+                        var packCt = dlCt;
                         SendModels();
                         _ = Task.Run(async () =>
                         {
@@ -1091,9 +1152,7 @@ public sealed class StandaloneSttController : IDisposable
                                 _lastProgressSentAt = now;
                                 _send("sttModelProgress", new { id, received, total });
                             }, packCt);
-                            _downloadingId = null;
-                            _downloadCts?.Dispose();
-                            _downloadCts = null;
+                            ReleaseDownload(id);
                             _send("toast", ok
                                 ? new { ok = true, msg = $"{pack.DisplayName} installed" }
                                 : new { ok = false, msg = error ?? "download failed" });
@@ -1103,31 +1162,14 @@ public sealed class StandaloneSttController : IDisposable
                         break;
                     }
 
-                    var info = SttModelCatalog.Find(id);
-                    if (info == null) break;
-
-                    // The voice detector takes the shared path: the boot
-                    // check may already be fetching it, and the same file
-                    // must never download twice at once.
-                    if (id == SttModelCatalog.VadId)
-                    {
-                        _ = EnsureVadAsync();
-                        SendModels();
-                        break;
-                    }
-
-                    _downloadingId = id;
-                    _downloadCts = new CancellationTokenSource();
-                    var ct = _downloadCts.Token;
+                    var ct = dlCt;
                     SendModels();
                     _ = Task.Run(async () =>
                     {
                         var (ok, error) = await _models.DownloadAsync(id, ct);
-                        _downloadingId = null;
-                        _downloadCts?.Dispose();
-                        _downloadCts = null;
+                        ReleaseDownload(id);
                         _send("toast", ok
-                            ? new { ok = true, msg = $"{info.DisplayName} downloaded and verified" }
+                            ? new { ok = true, msg = $"{info!.DisplayName} downloaded and verified" }
                             : new { ok = false, msg = error ?? "download failed" });
                         SendModels();
                         SendDevices();
@@ -1234,6 +1276,15 @@ public sealed class StandaloneSttController : IDisposable
         _loadingLabel = engine.Name;
         SendState();
         try { StartSession(deviceIndex, engineKind, engine); }
+        catch (Exception ex)
+        {
+            // Never leave the page in "Loading…" with a disabled button.
+            ErrorLog.WriteEntry("StartSession", ex);
+            _loading = false;
+            try { Stop(); } catch { }
+            _send("sttState", new { running = false, error = "captions could not start: " + ex.Message });
+            _send("toast", new { ok = false, msg = "Captions could not start — " + ex.Message });
+        }
         finally { _loading = false; }
     }
 
@@ -1244,12 +1295,24 @@ public sealed class StandaloneSttController : IDisposable
         _service.OnPass += OnPass;
         _service.OnPartial += (committed, pending) => _send("sttPartial", new { committed, pending });
         _service.OnSpeechActive += active => _send("sttSpeech", new { active });
-        _service.OnCaptureFailed += reason =>
+        var mine = _service;
+        _service.OnSessionFailed += reason =>
         {
-            // Device unplugged / driver failure mid-session: wind the session
-            // down and say so, instead of captioning silence forever.
+            // Device unplugged, driver failure, a recognition pass that
+            // threw: wind the session down and say so, instead of
+            // captioning silence forever. A session that has since replaced
+            // this one is not ours to stop; an auto-started one is re-armed
+            // so the presence recheck brings captions back once it can.
+            lock (_sessionLock) { if (!ReferenceEquals(_service, mine)) return; }
+            bool wasAuto = _autoStarted;
             Stop();
-            _send("toast", new { ok = false, msg = $"Captions stopped — microphone capture failed ({reason ?? "device lost"})" });
+            _send("toast", new { ok = false, msg = $"Captions stopped — {reason}" });
+            if (wasAuto && _settings.AutoStartEnabled)
+            {
+                BootLog.Append($"auto-started captions stopped ({reason}); presence recheck armed to bring them back");
+                _autoRecheckPhase = 0;   // two tries (5 s, then 10 s more), as after a world change
+                TryArmRecheck(5000);
+            }
         };
 
         _relay = new SttChatboxRelay(_service)
@@ -1280,6 +1343,11 @@ public sealed class StandaloneSttController : IDisposable
         int resolved = SttAudioDevices.ResolveInput(deviceIndex, _settings.InputDeviceName);
         var tier = SttHardwareTier.Detect();
         bool fastHardware = tier is SttTier.Gpu or SttTier.CpuHigh;
+        // The monitor is in place before the first pass can report to it.
+        _pace = new SttPaceMonitor();
+        _lastPaceStatus = SttPaceMonitor.PaceStatus.Unknown;
+        _lastPaceSentAt = 0;
+        _paceBehindLogged = false;
         if (!_service.Start(resolved, engine, out var error, fastHardware))
         {
             _relay.Dispose();
@@ -1291,10 +1359,6 @@ public sealed class StandaloneSttController : IDisposable
         }
 
         _loading = false;
-        _pace = new SttPaceMonitor();
-        _lastPaceStatus = SttPaceMonitor.PaceStatus.Unknown;
-        _lastPaceSentAt = 0;
-        _paceBehindLogged = false;
         _sessionStartedAt = Environment.TickCount64;
         SendState();
 
@@ -1325,9 +1389,13 @@ public sealed class StandaloneSttController : IDisposable
             if (_service != null)
                 BootLog.Append($"captions session ended after {(Environment.TickCount64 - _sessionStartedAt) / 60000.0:0.0} min — " +
                                $"{_pace.Summary()} — {_service.EngineName}");
-            _service?.Stop();
+            // The chatbox is cleared FIRST: stopping the service can wait
+            // on a recognition pass in flight (seconds on a slow CPU), and
+            // a companion app's TerminateProcess in that window must not
+            // leave the in-game text and the typing indicator behind.
             _relay?.Dispose();
             _relay = null;
+            _service?.Stop();
             _translator?.Dispose();   // 1 GB of weights: not kept between sessions
             _translator = null;
             _service?.Dispose();
@@ -1424,22 +1492,31 @@ public sealed class StandaloneSttController : IDisposable
 
     // Engine and relay log lines are not shown in the UI (it never was
     // wired to display them); the ones that mean something went wrong go
-    // to error.log, the rest are dropped without being serialized.
+    // to error.log, the ones a bug report about lag or a slow Stop needs
+    // (audio skipped to catch up, an engine freed late) go to
+    // last_boot.log, the rest are dropped without being serialized.
     private static void RouteSttLog(string line)
     {
         if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("did not exit", StringComparison.OrdinalIgnoreCase))
             ErrorLog.WriteNote("Stt", line);
+        else if (line.Contains("skipped", StringComparison.Ordinal) ||
+                 line.Contains("disposal deferred", StringComparison.Ordinal))
+            BootLog.Append(line.Replace("[STT] ", ""));
     }
 
     private void MeterTick()
     {
-        var svc = _service; // snapshot — Stop() nulls the field from other threads
-        if (svc is not { IsRunning: true }) return;
-        int pct = (int)MathF.Round(Math.Clamp(svc.MeterLevel, 0f, 1f) * 100f, MidpointRounding.AwayFromZero);
-        if (pct == _meterPct) return;
-        _meterPct = pct;
-        _send("sttMeter", new { level = pct / 100f });
+        try
+        {
+            var svc = _service; // snapshot — Stop() nulls the field from other threads
+            if (svc is not { IsRunning: true }) return;
+            int pct = (int)MathF.Round(Math.Clamp(svc.MeterLevel, 0f, 1f) * 100f, MidpointRounding.AwayFromZero);
+            if (pct == _meterPct) return;
+            _meterPct = pct;
+            _send("sttMeter", new { level = pct / 100f });
+        }
+        catch (Exception ex) { ErrorLog.WriteEntry("MeterTick", ex); }   // a timer callback: never let it crash the process
     }
 
     private static string ReadEmbeddedDoc(string name)
@@ -1642,9 +1719,10 @@ public sealed class StandaloneSttController : IDisposable
                 passMs = pass.PassMs,
                 windowMs = pass.WindowMs,
             });
-            if (changed && status == SttPaceMonitor.PaceStatus.Behind && !_paceBehindLogged)
+            if (changed && status == SttPaceMonitor.PaceStatus.Behind && !_paceBehindLogged && now - _lastPaceLogAt >= 60_000)
             {
                 _paceBehindLogged = true;
+                _lastPaceLogAt = now;
                 BootLog.Append($"recognition falling behind: {_pace.Describe()} — {_service?.EngineName}");
             }
             else if (changed && status == SttPaceMonitor.PaceStatus.KeepingUp && _paceBehindLogged)
@@ -1747,6 +1825,10 @@ public sealed class StandaloneSttController : IDisposable
     public void Dispose()
     {
         SttSettings.Recovered -= OnSettingsRecovered;
+        // A download in flight is cancelled (its cancel path removes the
+        // partial file, as a Cancel click does) instead of dying with the
+        // process mid-stream.
+        try { _downloadCts?.Cancel(); } catch { }
         // A fallback tick racing this dispose must not start a session on
         // a controller that is going away.
         Interlocked.Exchange(ref _bootReconcileDone, 1);
@@ -1761,5 +1843,9 @@ public sealed class StandaloneSttController : IDisposable
         using (var done = new ManualResetEvent(false))
             if (_autoRecheck.Dispose(done)) done.WaitOne(1000);
         Stop();
+        // Settings changed while the file was "momentarily invisible" would
+        // otherwise be lost on a quick quit.
+        lock (_settingsLock)
+            if (SttSettings.ProvisionalDefaults) _settings.GiveUpProvisional();
     }
 }
