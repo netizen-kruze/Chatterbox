@@ -43,6 +43,7 @@ function onPartial(committed, pending) {
 function onTranslated(p) {
   $('capTranslated').textContent = p.translated;
   $('capTranslated').hidden = false;
+  $('transPreview').innerHTML = `<div class="orig">${esc(p.original)}</div><div class="tr">${esc(p.translated)}</div>`;
 }
 function foldCaption() {
   const cur = $('capCommitted').textContent;
@@ -149,8 +150,10 @@ function renderDevices(p) {
   $('selTransLang').innerHTML = (p.translateLanguages || []).map(l =>
     `<option value="${esc(l.code)}" ${l.code === p.translateTarget ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
   $('transStatus').textContent = p.translateReady
-    ? (p.translateGpu ? 'Installed — runs on your GPU (Vulkan).' : 'Installed — runs on your CPU.')
-    : 'Not installed yet.';
+    ? (p.translateGpu ? 'Translation model and engine installed — runs on your GPU (Vulkan).' : 'Translation model and engine installed — runs on your CPU.')
+    : 'Needs the translation model and the engine pack from the Models screen.';
+  $('transDot').className = 'dot ' + (p.translateReady ? 'ok' : 'warn');
+  $('btnTransModels').hidden = !!p.translateReady;
   const wm = $('selWhisperModel');
   wm.innerHTML = `<option value="">Auto${p.whisperModelName ? ` (${esc(p.whisperModelName)})` : ''}</option>` +
     (p.whisperModels || []).map(m =>
@@ -482,6 +485,7 @@ toggleHandler($('tglTransOrig'), () => {
 });
 $('selTransLang').addEventListener('change', () =>
   send({ action: 'sttConfig', translateTarget: $('selTransLang').value }));
+$('btnTransModels').addEventListener('click', () => showView('models'));
 $('selWhisperModel').addEventListener('change', () =>
   send({ action: 'sttConfig', whisperModel: $('selWhisperModel').value }));
 $('selDevice').addEventListener('change', () =>

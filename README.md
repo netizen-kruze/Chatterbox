@@ -72,8 +72,8 @@ own machine. On the **Models** screen download the **Hy-MT2 1.8B
 translation model** (1.1 GB, Tencent, Apache-2.0) and the **Translation
 engine** (36 MB, llama.cpp); on any GPU — NVIDIA, AMD or Intel — the
 optional **GPU acceleration for translation (Vulkan)** pack (20 MB) makes
-it several times faster. Then under **Settings → Translation** switch
-**Translate my captions** on and pick the language. Each finished sentence
+it several times faster. Then on the **Translate** tab switch **Translate my captions** on and
+pick the language. Each finished sentence
 is translated in about 0.1 s on a GPU and 0.5 s on a modern CPU; the
 chatbox shows the translation, optionally followed by your original words
 in brackets. The engine and model selectors live on the Models screen

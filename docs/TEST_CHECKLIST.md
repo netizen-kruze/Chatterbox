@@ -112,11 +112,14 @@ away (restore after this section).
 
 ## H. Translation (1.7.0)
 
+- [ ] The Translate tab shows whether the model and engine are installed
+      (an **Open Models** button when they are not) and the last translated
+      sentence once captions run.
 - [ ] Models → Components lists the Hy-MT2 translation model (1.1 GB), the
       Translation engine (36 MB) and GPU acceleration for translation
       (Vulkan, 20 MB); each downloads with progress, Cancel works, and
       **Verify installed files** covers the pack DLLs.
-- [ ] Settings → Translation on, "Translate into" Japanese, Start, speak a
+- [ ] Translate tab: switch on, "Translate into" Japanese, Start, speak a
       sentence and pause → the chatbox shows the Japanese sentence (check
       CJK renders in-game over OSC), the Captions page shows it under your
       words in amber, and `last_boot.log` has a "translation: … loaded in
