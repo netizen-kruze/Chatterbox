@@ -237,3 +237,4 @@ button:focus-visible,select:focus-visible,input:focus-visible,.toggle:focus-visi
   .rail button span{display:none}
   .rail .tray-note{display:none}
 }
+.capline.translated{color:var(--amber);font-size:clamp(18px,3.4vw,26px);max-width:40ch}

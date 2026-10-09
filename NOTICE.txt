@@ -9,6 +9,8 @@ Third-party software
 - NAudio — MIT (Mark Heath)
 - Photino.NET — Apache-2.0 (TryPhotino)
 - Newtonsoft.Json — MIT (James Newton-King)
+- LLamaSharp and llama.cpp — MIT (Martin Evans and contributors; Georgi
+  Gerganov et al.) — the translation runtime, fetched on demand
 - Atkinson Hyperlegible font — SIL OFL 1.1 (Braille Institute of America)
 - IBM Plex Sans / IBM Plex Mono fonts — SIL OFL 1.1 (IBM)
 
@@ -21,6 +23,10 @@ Models (downloaded at runtime, never bundled)
 - Silero VAD — MIT (snakers4/silero-vad; ggml conversion by ggml-org)
 - Whisper CUDA acceleration pack — MIT (whisper.cpp CUDA build, packaged
   by Whisper.net)
+- Tencent Hy-MT2 1.8B translation model — Apache-2.0 (Tencent Hunyuan; GGUF
+  by Tencent). License: https://www.apache.org/licenses/LICENSE-2.0
+- Translation runtime packs (llama.cpp CPU and Vulkan builds, packaged by
+  LLamaSharp) — MIT
 
 A machine-readable manifest of installed models and their licenses is
 written next to the models themselves (models_manifest.json).

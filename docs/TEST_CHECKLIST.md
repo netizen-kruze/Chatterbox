@@ -29,6 +29,9 @@ away (restore after this section).
       test (optional): append a byte to a model file → Verify names it.
 - [ ] GPU pack (NVIDIA): download completes, toast says restart to
       activate; after restart, Whisper status chip shows `Cuda`.
+- [ ] Models → **In use** (moved from Settings in 1.7.0): the engine switch
+      and the Whisper model picker change the Active badge below and
+      persist across a restart.
 - [ ] Restore your real `%APPDATA%` folders.
 
 ## B. Captions core
@@ -107,6 +110,25 @@ away (restore after this section).
       "PreviousStart" entry (with Windows' crash record when one exists).
       The launch after that is normal again.
 
+## H. Translation (1.7.0)
+
+- [ ] Models → Components lists the Hy-MT2 translation model (1.1 GB), the
+      Translation engine (36 MB) and GPU acceleration for translation
+      (Vulkan, 20 MB); each downloads with progress, Cancel works, and
+      **Verify installed files** covers the pack DLLs.
+- [ ] Settings → Translation on, "Translate into" Japanese, Start, speak a
+      sentence and pause → the chatbox shows the Japanese sentence (check
+      CJK renders in-game over OSC), the Captions page shows it under your
+      words in amber, and `last_boot.log` has a "translation: … loaded in
+      N ms (CPU, T threads | Vulkan GPU) → Japanese" line.
+- [ ] "Show the original too" → chatbox shows "translation (original)".
+- [ ] Translation on with the model or engine pack missing → Start still
+      works, captions run untranslated, a toast with **Open Models** says
+      why. Same when the model fails to load.
+- [ ] Switching translation off while captions run stops translating at
+      the next sentence; on again resumes (the model loads once, 1–3 s).
+- [ ] Stop frees the model (Task Manager: memory drops by about 1.2 GB).
+
 ## E. Coexistence
 
 - [ ] Another VRChat companion app running at the same time: both apps
@@ -177,7 +199,7 @@ away (restore after this section).
       (one request to api.github.com); a build without it shows the greyed
       "no update source configured" line and never goes online. "Check
       when Chatterbox starts" persists (`CheckUpdatesAtStartup` in
-      stt_settings.json) and is off by default.
+      stt_settings.json) and is on by default.
 - [ ] Update flow, offline-safe: serve a fake release with
       `python -m http.server` — a `latest.json` in GitHub's release shape
       (tag `vX.Y.Z` above the build, an asset named

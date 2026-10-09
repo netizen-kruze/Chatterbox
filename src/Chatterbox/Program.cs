@@ -180,6 +180,7 @@ internal static class Program
         SttModelManager.SetUserAgent(ua);
         SttGpuPack.SetUserAgent(ua);
         SttEnginePack.SetUserAgent(ua);
+        SttNativePack.SetUserAgent(ua);
         AppUpdater.SetUserAgent(ua);
 
         using var watcher = new PresenceWatcher(vrchatLogDir);

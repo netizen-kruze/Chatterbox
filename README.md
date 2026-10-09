@@ -64,6 +64,25 @@ screen, download **GPU acceleration for Whisper (CUDA)** (~143 MB) and
 restart the app. Parakeet (the recommended engine) is fast on CPU either
 way.
 
+## Translation
+
+Chatterbox can translate your captions before they reach the chatbox, so
+people who read another language can follow you — still entirely on your
+own machine. On the **Models** screen download the **Hy-MT2 1.8B
+translation model** (1.1 GB, Tencent, Apache-2.0) and the **Translation
+engine** (36 MB, llama.cpp); on any GPU — NVIDIA, AMD or Intel — the
+optional **GPU acceleration for translation (Vulkan)** pack (20 MB) makes
+it several times faster. Then under **Settings → Translation** switch
+**Translate my captions** on and pick the language. Each finished sentence
+is translated in about 0.1 s on a GPU and 0.5 s on a modern CPU; the
+chatbox shows the translation, optionally followed by your original words
+in brackets. The engine and model selectors live on the Models screen
+under **In use**.
+
+The model was chosen by a timed comparison of the small open-weight
+translators (`docs/TRANSLATION_BENCH-2026-10-08.md`): the fastest one that
+was also accurate. The picker lists the languages it does best.
+
 ## Requirements
 
 - Windows 10/11, 64-bit.
@@ -101,13 +120,13 @@ records the app has run before).
 Chatterbox sends **no telemetry, no analytics, no pings — nothing.** Its
 complete network activity:
 
-- Downloading model files you request (Hugging Face) and the optional
-  engine/GPU packs (nuget.org) — every download checksum-verified. The one
+- Downloading model files you request (Hugging Face, including the
+  translation model) and the optional engine/GPU packs (nuget.org) — every download checksum-verified. The one
   download that starts on its own: after an update that changed the small
   voice-detection model, the new file (under 1 MB, same source, same
   checksum check) is fetched the first time Chatterbox starts.
 - Checking for updates — when you press **Check for updates**, or at
-  startup if you turned that on (off by default): one request to GitHub's
+  startup unless you switched that off under Settings → Updates (it is on by default): one request to GitHub's
   Releases API, which sees the app's name and version and nothing else.
 - Caption text to VRChat over OSC on **your own machine only**
   (`127.0.0.1:9000` — never leaves the PC).
@@ -115,7 +134,7 @@ complete network activity:
 That is the entire list. The embedded WebView2 browser is additionally
 launched with its background networking, component updates, crash upload,
 and reliability pings disabled. Your speech is transcribed locally and is
-never transmitted anywhere.
+never transmitted anywhere, and so is its translation.
 
 ## Troubleshooting
 
