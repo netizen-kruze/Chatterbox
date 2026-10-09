@@ -2,13 +2,38 @@
 
 Live captions for VRChat, built for deaf and hard-of-hearing players. Your
 speech is transcribed **on your own PC** and streamed into your in-game
-chatbox — nothing you say ever leaves your machine (the only network access
-is downloading model files, checksum-verified).
+chatbox — and, if you want, translated into another language first, also
+on your own PC. Nothing you say ever leaves your machine: the only network
+access is downloading the model files you ask for (checksum-verified) and
+asking GitHub whether a newer version exists.
 
 Works alongside the official VRChat client — no account login, no game
 mod, no install.
 
 ![Chatterbox captioning](docs/screenshot.png)
+
+## Features
+
+- **Live captions in the chatbox** — two local engines: NVIDIA Parakeet
+  (fast and accurate on any CPU, the recommended default) and OpenAI
+  Whisper (multilingual, GPU-accelerated with the CUDA pack). The chatbox
+  shows your last sentences within VRChat's 144-character window, with a
+  typing indicator while you speak and a new line after a pause.
+- **Translation** (1.7) — each finished sentence can be translated on your
+  machine (Tencent Hy-MT2, 22 languages) before it reaches the chatbox,
+  with or without your original words in brackets. Its own **Translate**
+  tab; CPU or any GPU through Vulkan.
+- **Auto-start players** — captions start when a chosen player is in your
+  instance and stop when the last one leaves.
+- **Lives and dies with VRChat** — one Steam launch option starts
+  Chatterbox with the game and quits it with the game.
+- **Falling-behind advice** — when recognition can't keep up, a one-click
+  toast offers the fix for your machine; a built-in speed check rates every
+  installed engine in under a minute.
+- **In-app updates** (1.6) — one click fetches the next release from this
+  repository's Releases page, verified against its published SHA-256.
+- **Private by construction** — no telemetry, no accounts; every download
+  is hash-pinned; the complete network list is under Privacy & network.
 
 ## Download
 
@@ -31,6 +56,9 @@ SmartScreen may warn on first run — choose **More info → Run anyway**.
    ~718 MB on NVIDIA machines, where it includes GPU acceleration).
 4. Press **Start captions** and talk. Your words appear in the app and in
    your VRChat chatbox.
+5. Optional: to caption in another language, open the **Translate** tab —
+   it says what to download and holds the language switch (see
+   Translation below).
 
 Closing the window hides Chatterbox to the system tray — captions keep
 running. Left-click the tray icon to reopen; right-click → Exit to quit.
@@ -72,12 +100,20 @@ own machine. On the **Models** screen download the **Hy-MT2 1.8B
 translation model** (1.1 GB, Tencent, Apache-2.0) and the **Translation
 engine** (36 MB, llama.cpp); on any GPU — NVIDIA, AMD or Intel — the
 optional **GPU acceleration for translation (Vulkan)** pack (20 MB) makes
-it several times faster. Then on the **Translate** tab switch **Translate my captions** on and
-pick the language. Each finished sentence
-is translated in about 0.1 s on a GPU and 0.5 s on a modern CPU; the
-chatbox shows the translation, optionally followed by your original words
-in brackets. The engine and model selectors live on the Models screen
-under **In use**.
+it several times faster.
+
+The **Translate** tab (new in 1.7.1) is where it all lives: a banner that
+says whether the model and engine are installed (with an **Open Models**
+button when they are not), the **Translate my captions** switch, the
+**Translate into** language picker, **Show the original too**, and a
+panel with the last sentence translated. Each finished sentence is
+translated in about 0.1 s on a GPU and 0.5 s on a modern CPU; the chatbox
+shows the translation, optionally followed by your original words in
+brackets, and the Captions page shows it under your words. Whatever
+language you speak is translated into the one you picked. If the model or
+engine is missing, captions simply run untranslated and a toast says why.
+The recognition engine and Whisper model selectors live on the Models
+screen under **In use** (moved there from Settings in 1.7.0).
 
 The model was chosen by a timed comparison of the small open-weight
 translators (`docs/TRANSLATION_BENCH-2026-10-08.md`): the fastest one that
@@ -96,9 +132,10 @@ was also accurate. The picker lists the languages it does best.
 **Settings → Updates → Check for updates** asks the project's GitHub
 Releases page for a newer version and installs it in place: the zip is
 downloaded, checked against the SHA-256 published with the release, the
-exe is swapped and Chatterbox restarts. Turn on **Check when Chatterbox
-starts** to be told at startup when a new version exists (it never
-installs anything by itself). Your settings, auto-start players, and
+exe is swapped and Chatterbox restarts. **Check when Chatterbox starts**
+(on by default since 1.7.0) tells you at startup when a new version
+exists — it never installs anything by itself; switch it off under
+Settings → Updates if you'd rather check by hand. Your settings, auto-start players, and
 downloaded models live in `%APPDATA%\Chatterbox\` and survive updates;
 the optional Parakeet engine and GPU acceleration packs install **next to
 the exe** and survive too.
@@ -156,6 +193,12 @@ never transmitted anywhere, and so is its translation.
   CPU, Whisper runs a shortened encoder context for speed.
 - **Captions stopped on their own**: the mic was disconnected, or auto-stop
   fired because the last watched player left.
+- **Translation is on but the chatbox shows my own words**: the Translate
+  tab's banner says what is missing — the translation model (1.1 GB) and
+  the Translation engine both come from the Models screen. If both are
+  installed and the banner is green, look for a "Translation unavailable"
+  toast and the `translation:` line in `last_boot.log`; a failed load
+  falls back to untranslated captions rather than stopping them.
 - **Settings or players missing after a launch**: check `last_boot.log` —
   it records which settings file was read and how many auto-start players
   it held. If the file was missing at start, Chatterbox keeps watching for
@@ -206,6 +249,29 @@ on a given PC — no VRChat session needed:
 Every `last_boot.log` starts with a `machine:` line (CPU, threads, RAM,
 GPUs, Windows build, hardware tier), so a report from any machine says
 what it ran on.
+
+## What's new
+
+- **1.7.1** — the translator gets its own **Translate** tab on the left
+  rail: install-status banner with an Open Models button, the switch, the
+  language, "show the original too", and the last translation.
+- **1.7.0** — **local translation**: Tencent's Hy-MT2 1.8B model through
+  llama.cpp, fetched on demand as the model plus a CPU engine pack, with an
+  optional Vulkan pack for any GPU vendor; chosen by a timed comparison of
+  the small open-weight translators. The recognition engine and Whisper
+  model selectors moved from Settings to **Models → In use**. The startup
+  update check is now on by default.
+- **1.6.1** — the update check explains a 404 from GitHub (no release yet,
+  or a private repository).
+- **1.6.0** — **in-app updates** from this repository's Releases page:
+  check, verified download, exe swap and restart; optional check at
+  startup.
+- **Earlier** — Silero VAD v6.2.0 voice detector that updates itself
+  (1.5.3); a Players-screen header that explains an empty VRChat log
+  (1.5.2); speed check, smoke test and machine profile in every boot log
+  (1.5.0); bounded re-transcription so lag no longer grows with sentence
+  length (1.4.0); pace monitor with one-click fixes and crash-resilient
+  boot (1.3.0).
 
 ## Building from source
 
