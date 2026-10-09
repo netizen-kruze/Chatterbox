@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
@@ -61,7 +62,8 @@ public static class SttGpuPack
     // The archive is staged in the install folder itself, not the temp
     // folder, so it sits on the drive the extraction needs anyway. A
     // network failure keeps the staged file so the next attempt resumes it
-    // (SttDownload.ResumableDownloadAsync); a bad hash or a cancel drops it.
+    // (SttDownload.ResumableDownloadAsync); a bad hash, a cancel or a source
+    // that changed (the server refuses the resume: 416) drops it.
     public static async Task<(bool Ok, string? Error)> DownloadAsync(
         Action<long, long> onProgress, CancellationToken ct = default)
     {
@@ -71,7 +73,11 @@ public static class SttGpuPack
         try
         {
             Directory.CreateDirectory(InstallDir);
-            SttDownload.EnsureFreeSpace(InstallDir, NupkgSizeBytes + Files.Sum(f => f.Size) + 64_000_000);
+            // Bytes a previous attempt already staged count: a resume needs
+            // only the remainder.
+            long have = 0;
+            try { if (new FileInfo(tempNupkg) is { Exists: true } fi && fi.Length < NupkgSizeBytes) have = fi.Length; } catch { }
+            SttDownload.EnsureFreeSpace(InstallDir, NupkgSizeBytes - have + Files.Sum(f => f.Size) + 64_000_000);
         }
         catch (Exception ex)
         {
@@ -115,6 +121,12 @@ public static class SttGpuPack
         catch (OperationCanceledException)
         {
             return (false, "download cancelled");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            // The staged file is longer than what the server now has: it can
+            // never be continued, so it goes and the next try starts clean.
+            return (false, "GPU pack: download failed — the source changed; retry to download it afresh");
         }
         catch (Exception ex)
         {

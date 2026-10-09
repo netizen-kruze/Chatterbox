@@ -52,6 +52,12 @@ ative,
          places them in runtimes\win-x64 beside the exe at boot — a probed
          path, the same one the CUDA pack installs into. -->
     <PackageReference Include="Whisper.net.Runtime" Version="$(WhisperNetVersion)" ExcludeAssets="all" />
+    <!-- The same whisper.cpp built without AVX (~2 MB more in the exe):
+         Whisper.net refuses to load its AVX2/FMA build on a CPU without
+         those instructions unless a noavx runtime folder exists — and the
+         voice detector loads through the same library, so without this
+         even Parakeet could not start on an older CPU. -->
+    <PackageReference Include="Whisper.net.Runtime.NoAvx" Version="$(WhisperNetVersion)" ExcludeAssets="all" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
     <!-- The 22 MB win-x64 natives ship via the in-app engine pack instead
          (SttEnginePack); excluding them here keeps the package small. -->
@@ -90,11 +96,19 @@ ative,
     <EmbeddedResource Include="$(NuGetPackageRoot)whisper.net.runtime\$(WhisperNetVersion)\build\win-x64\*.dll">
       <LogicalName>natives/win-x64/%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <!-- The no-AVX build, unpacked into runtimes\noavx\win-x64 beside the
+         exe where Whisper.net's loader looks for it (used only on a CPU
+         without AVX2/FMA; on any other its folder is merely there). -->
+    <EmbeddedResource Include="$(NuGetPackageRoot)whisper.net.runtime.noavx\$(WhisperNetVersion)\build\win-x64\*.dll">
+      <LogicalName>natives/noavx/win-x64/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <Target Name="EnsureWhisperNatives" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('$(NuGetPackageRoot)whisper.net.runtime\$(WhisperNetVersion)\build\win-x64\whisper.dll')"
            Text="Whisper.net.Runtime $(WhisperNetVersion) natives not found in the NuGet cache — run a package restore first." />
+    <Error Condition="!Exists('$(NuGetPackageRoot)whisper.net.runtime.noavx\$(WhisperNetVersion)\build\win-x64\whisper.dll')"
+           Text="Whisper.net.Runtime.NoAvx $(WhisperNetVersion) win-x64 natives not found in the NuGet cache — run a package restore first." />
   </Target>
 
   <ItemGroup>

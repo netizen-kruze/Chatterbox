@@ -100,7 +100,11 @@ own machine. On the **Models** screen download the **Hy-MT2 1.8B
 translation model** (1.1 GB, Tencent, Apache-2.0) and the **Translation
 engine** (36 MB, llama.cpp); on any GPU — NVIDIA, AMD or Intel — the
 optional **GPU acceleration for translation (Vulkan)** pack (20 MB) makes
-it several times faster.
+it several times faster. It uses your graphics driver's Vulkan support,
+and the translation runtime finds the GPU by running `vulkaninfo.exe`,
+which the driver installs with it; without that tool the pack is not
+used. The Translate banner and `last_boot.log`'s `translation:` line say
+which build is really doing the work.
 
 The **Translate** tab (new in 1.7.1) is where it all lives: a banner that
 says whether the model and engine are installed (with an **Open Models**
@@ -127,6 +131,10 @@ was also accurate. The picker lists the languages it does best.
 - Microsoft Edge WebView2 Runtime — preinstalled on Windows 11 and current
   Windows 10; if missing, Chatterbox points you to Microsoft's one-click
   installer at startup.
+- Any x64 CPU. With AVX2 and FMA (any desktop CPU from the last decade)
+  Whisper runs at full speed; without them the bundled no-AVX build is
+  used (slower — Parakeet is the better engine there, and
+  `last_boot.log`'s "whisper natives" line says which build is in use).
 - A microphone. VRChat can keep using it at the same time (shared mode).
 
 ## Updates
@@ -215,10 +223,24 @@ never transmitted anywhere, and so is its translation.
   to Parakeet, use a smaller Whisper model, install GPU acceleration, or
   restart to activate it. `last_boot.log` records every session's pace
   (passes, average and worst pass time, worst lag) for bug reports.
-- **Chatterbox crashed or vanished**: the next start notices (a
-  `boot.inprogress` marker survived), copies Windows' crash record into
-  `error.log`, and runs a safe boot — captions are not auto-started until
-  you press Start once, so a crash can never loop.
+- **Chatterbox crashed or vanished**: the next start notices (the
+  `boot.inprogress` marker survived, and says whether the run died while
+  starting, idle, or with captions running), copies Windows' crash record
+  into `error.log`, and — unless the window was merely idle when it was
+  ended — runs a safe boot: captions are not auto-started until you press
+  Start once, so a crash can never loop. Signing out or shutting down
+  with Chatterbox in the tray counts as a clean exit.
+- **The Vulkan translation pack is installed but translation runs on the
+  CPU**: the Translate banner, a toast at Start and the `translation:`
+  line in `last_boot.log` say why. The translation runtime finds a Vulkan
+  GPU by running `vulkaninfo.exe` (in `System32`, installed by the
+  graphics driver) and quietly uses the CPU build without it — updating
+  the graphics driver brings it back. A pack installed while translation
+  was already running needs a restart. The `llama loader:` lines in
+  `last_boot.log` name the library that was loaded.
+- **An old CPU without AVX2/FMA**: the bundled no-AVX Whisper build is
+  used automatically (`last_boot.log`'s "whisper natives" line says so).
+  It is slower; Parakeet is the better engine on such a machine.
 - Errors are logged to `%APPDATA%\Chatterbox\error.log`.
 
 Don't run Chatterbox's captions at the same time as another chatbox
@@ -274,8 +296,19 @@ what it ran on.
   transcribes what is left in the window; Parakeet is handed at most 20 s
   per pass; a model or GPU-pack download that fails on the network keeps
   its partial file and the retry continues where it stopped; a settings
-  save that fails says so instead of a silent "Saved"; and a CPU without
-  AVX2 is named as the reason when the bundled Whisper build will not load.
+  save that fails says so instead of a silent "Saved". From the Linux
+  build's audit: a CPU without AVX2/FMA gets the bundled no-AVX Whisper
+  build, so both engines run there (the voice detector loads through it
+  too); the crash marker now covers the whole run, so a crash during
+  captions is recorded and the next start does not walk back into it
+  (sign-out and shutdown count as clean exits); the Translate tab says
+  when translation runs on the CPU although the Vulkan pack is installed,
+  and why; the microphone is chosen by the name you see, so a list that
+  went stale after a USB unplug cannot pick another device; the Parakeet
+  engine download resumes like the others; deleting a model also removes
+  a half-downloaded file; a data folder deleted to reset the app reads as
+  a first run again; and a repeated toast replaces its older copy instead
+  of stacking up.
 - **1.7.1** — the translator gets its own **Translate** tab on the left
   rail: install-status banner with an Open Models button, the switch, the
   language, "show the original too", and the last translation.

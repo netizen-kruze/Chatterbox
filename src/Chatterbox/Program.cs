@@ -170,7 +170,7 @@ internal static class Program
             return 1;
         }
         ExtractWhisperNatives();
-        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "whisper.dll")))
+        if (!File.Exists(Path.Combine(SttPaths.NativeDir, "whisper.dll")))
         {
             // Captions cannot run without these natives (the voice detector
             // loads through them), and the usual cause is an unwritable app
@@ -183,6 +183,10 @@ internal static class Program
                 "not Program Files) and start it again. Captions can't run until then.",
                 "Chatterbox", 0x00000030u);
         }
+        // The translation runtime's loader says which build it picked
+        // (vulkan or a CPU variant) — the only truthful source for the
+        // "runs on your GPU" claim.
+        LlamaTranslator.OnLoaderLog += line => BootLog.Append("llama loader: " + line);
 
         // Model/GPU-pack downloads identify this app by name and version.
         var ua = $"Chatterbox/{version}";
@@ -194,6 +198,17 @@ internal static class Program
 
         using var watcher = new PresenceWatcher(vrchatLogDir);
         if (assumeGame) watcher.IsGameRunning = () => true;
+        // What the watcher does and sees — which file it follows, a poll
+        // that fails, players coming and going (counts only) — goes to the
+        // boot log, where a "Players shows nothing" report can be read off.
+        // Repeats are folded and the total is capped: a failure every second
+        // must not write a log that grows all session.
+        watcher.DebugLog += line =>
+        {
+            if (line == _lastWatcherLine || Interlocked.Increment(ref _watcherLines) > 300) return;
+            _lastWatcherLine = line;
+            BootLog.Append(line);
+        };
         using var ctrl = new StandaloneSttController(watcher, SendToUi);
         using var tray = new TrayService();
 
@@ -228,7 +243,14 @@ internal static class Program
                 SetForegroundWindow(_window.WindowHandle);
             });
         };
-        tray.OnExit += () => { _exiting = true; CloseWindowOrExit(); };
+        tray.OnExit += () => RequestExit("the tray menu's Exit");
+        // Sign-out, shutdown or restart: Windows ends the process right after
+        // this, so it is a wanted exit, not a crash — the marker goes now.
+        tray.OnSessionEnding += () =>
+        {
+            BootLog.Append("exit: Windows is ending the session (sign-out, shutdown or restart)");
+            BootSentinel.Clear();
+        };
 
         // Wrapper mode: once the game has been seen running, its exit ends
         // this app too (the watcher's process check is the authority).
@@ -237,8 +259,9 @@ internal static class Program
         {
             if (running) { sawGame = true; return; }
             if (!withVrchat || !sawGame || _exiting) return;
-            _exiting = true;
-            CloseWindowOrExit();
+            // Logged, through the window, with the hard-exit backstop should
+            // the window thread never answer.
+            RequestExit("VRChat exiting (Steam launch-option mode)");
         };
 
         _ = RunUiDispatcherAsync();
@@ -257,12 +280,13 @@ internal static class Program
             SendToUi("toast", new { ok = true, msg = "Chatterbox " + updated });
         }
         if (unfinished != null)
-            BootLog.Append($"previous start ({unfinished.Version} at {unfinished.StartedAt:HH:mm:ss}, pid {unfinished.Pid}) " +
-                           "never reached the window — crashed or was killed. SAFE BOOT: captions won't auto-start " +
-                           "until Start is pressed; the Windows crash record goes to error.log");
+            BootLog.Append($"previous run ({unfinished.Version} started {unfinished.StartedAt:HH:mm:ss}, pid {unfinished.Pid}) " +
+                           $"{unfinished.How} — crashed or was killed" +
+                           (unfinished.WantsSafeBoot ? ". SAFE BOOT: captions won't auto-start until Start is pressed" : "") +
+                           "; the Windows crash record goes to error.log");
         SttSettings.MarkHasRun(version);
         ctrl.EnsureVoiceDetectorAtBoot();
-        ctrl.ArmBootReconcile(safeBoot: unfinished != null);
+        ctrl.ArmBootReconcile(safeBootReason: unfinished is { WantsSafeBoot: true } ? unfinished.How : null);
         ctrl.RestartRequested += RestartApp;
 
         // A page that never connects means a blank window (WebView2
@@ -280,9 +304,15 @@ internal static class Program
         _window.WaitForClose();
         _exiting = true;
         if (_restartWhy != null) LaunchSuccessor(_restartWhy, ctrl.PendingUpdateSwap);
+        // The watcher's poll must not reach a controller that is being
+        // disposed (the usings unwind ctrl first); Stop waits for one in flight.
+        watcher.Stop();
         BootSentinel.Clear();
         return 0;
     }
+
+    private static string? _lastWatcherLine;
+    private static int _watcherLines;
 
     private static string? ArgValue(string[] args, string name)
     {
@@ -291,7 +321,18 @@ internal static class Program
     }
 
     // Exit requested from the tray or by the game closing: through the
-    // window when it exists, straight out when it doesn't yet.
+    // window when it exists, straight out when it doesn't yet — and out
+    // regardless after 10 s, should the window thread never answer.
+    private static void RequestExit(string why)
+    {
+        if (_exiting) return;
+        _exiting = true;
+        BootLog.Append($"exit requested by {why}");
+        CloseWindowOrExit();
+        // The backstop is a wanted exit, not a crash: the marker goes too.
+        _ = Task.Delay(10_000).ContinueWith(_ => { try { BootLog.Append("exit: hard exit after 10 s"); BootSentinel.Clear(); Environment.Exit(0); } catch { } });
+    }
+
     private static void CloseWindowOrExit()
     {
         if (_windowUp)
@@ -443,7 +484,7 @@ internal static class Program
         {
             BootLog.Append($"ui: page connected {Environment.TickCount64 - _bootTick} ms after start, " +
                            $"{ToUi.Reader.Count} queued message(s) released");
-            BootSentinel.Clear();   // this start made it — nothing to report next time
+            BootSentinel.Mark(BootSentinel.PhaseWindow);   // the start made it; the marker now guards the run
             ctrl.UiConnected();
         }
         try
@@ -483,25 +524,38 @@ internal static class Program
     // natives to its own temp dir, which Whisper.net's loader never probes.
     // runtimes\win-x64 next to the exe IS probed (the CUDA pack proves it).
     // The VAD loads through whisper.cpp too, so captions need these even on
-    // Parakeet. Always overwritten (~2 MB): an exe-swap update must never
-    // leave a stale native behind, and same-size version collisions are
-    // realistic with alignment-padded PE files.
+    // Parakeet. Always overwritten (~2 MB each): an exe-swap update must
+    // never leave a stale native behind, and same-size version collisions
+    // are realistic with alignment-padded PE files.
     private static void ExtractWhisperNatives()
     {
         try
         {
-            var dir = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64");
-            Directory.CreateDirectory(dir);
             var asm = typeof(Program).Assembly;
-            foreach (var name in asm.GetManifestResourceNames())
+            // The AVX2/FMA build and the no-AVX build, each into the folder
+            // Whisper.net probes for it; the loader picks by what the CPU
+            // has (the no-AVX folder must EXIST for an older CPU not to be
+            // refused outright — see Chatterbox.csproj).
+            foreach (var (prefix, dir) in new[]
             {
-                if (!name.StartsWith("natives/win-x64/", StringComparison.Ordinal)) continue;
-                var dest = Path.Combine(dir, name["natives/win-x64/".Length..]);
-                if (File.Exists(dest)) File.SetAttributes(dest, FileAttributes.Normal);
-                using var src = asm.GetManifestResourceStream(name)!;
-                using var dst = File.Create(dest);
-                src.CopyTo(dst);
+                ("natives/" + SttPaths.Rid + "/", SttPaths.NativeDir),
+                ("natives/noavx/" + SttPaths.Rid + "/", SttPaths.NoAvxNativeDir),
+            })
+            {
+                Directory.CreateDirectory(dir);
+                foreach (var name in asm.GetManifestResourceNames())
+                {
+                    if (!name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                    var dest = Path.Combine(dir, name[prefix.Length..]);
+                    if (File.Exists(dest)) File.SetAttributes(dest, FileAttributes.Normal);
+                    using var src = asm.GetManifestResourceStream(name)!;
+                    using var dst = File.Create(dest);
+                    src.CopyTo(dst);
+                }
             }
+            BootLog.Append("whisper natives: " + (WhisperNetEngine.CpuHasAvx
+                ? "AVX2+FMA present — the AVX build is used"
+                : $"this CPU lacks AVX2/FMA — the no-AVX build in {SttPaths.NoAvxNativeDir} is used (slower; Parakeet is the better engine here)"));
         }
         catch (Exception ex) { ErrorLog.WriteEntry("ExtractWhisperNatives", ex); }
     }

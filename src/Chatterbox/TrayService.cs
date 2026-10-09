@@ -15,10 +15,14 @@ public sealed class TrayService : IDisposable
 {
     public event Action? OnOpen;
     public event Action? OnExit;
+    // Windows is signing out, shutting down or restarting: the process is
+    // ended right after this returns (WM_ENDSESSION). Raised on the tray
+    // thread; keep it quick.
+    public event Action? OnSessionEnding;
 
     private const uint CallbackMsg = 0x8000 + 1; // WM_APP + 1
     private const uint WmLButtonUp = 0x0202, WmLButtonDblClk = 0x0203, WmRButtonUp = 0x0205;
-    private const uint WmDestroy = 0x0002, WmClose = 0x0010;
+    private const uint WmDestroy = 0x0002, WmClose = 0x0010, WmEndSession = 0x0016;
     private const int MenuOpen = 1, MenuExit = 2;
 
     private readonly Thread _thread;
@@ -84,6 +88,16 @@ public sealed class TrayService : IDisposable
         if (msg == _taskbarCreatedMsg && _taskbarCreatedMsg != 0)
         {
             AddIcon(); // explorer restarted — the icon must be re-added
+            return IntPtr.Zero;
+        }
+        // Sent to every top-level window, this hidden one included; wParam
+        // is zero when the sign-out or shutdown was cancelled after all.
+        if (msg == WmEndSession)
+        {
+            if (wParam != IntPtr.Zero)
+            {
+                try { OnSessionEnding?.Invoke(); } catch { }
+            }
             return IntPtr.Zero;
         }
         if (msg == WmDestroy)

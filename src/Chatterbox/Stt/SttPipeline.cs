@@ -183,7 +183,7 @@ public sealed class SttPipeline : IDisposable
                 // Catch-up: whatever arrived while the last pass ran is
                 // taken now, so one tick and one pass cover the backlog.
                 while (reader.TryRead(out var more)) Take(more);
-                if (_stopRequested) continue;   // drain only; the flush below is the last pass
+                if (_stopRequested) continue;   // drain only: Stop is under way, and nothing left in the window is transcribed (see below)
                 Shed();
                 if (_bytesSinceVad >= vadTickBytes)
                 {

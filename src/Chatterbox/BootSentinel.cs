@@ -8,55 +8,115 @@ using Chatterbox.Stt;
 
 namespace Chatterbox;
 
-// <data dir>\boot.inprogress exists only while a start is under way:
-// written before the risky work (native extraction, engine loads, window
-// creation) and deleted the moment the page connects. Finding it at the
-// next start means the previous start never reached the window — it
-// crashed, or was killed — so that start gets Windows' crash record copied
-// into error.log (CrashRecord) and a safe boot: no automatic captions until
-// a human presses Start. A crash can no longer be silent, and cannot loop.
+// <data dir>\boot.inprogress exists for the whole life of a run: written
+// before the risky work (native extraction, engine loads, window creation)
+// with the phase "boot", moved to "window" when the page connects, to
+// "captions" while a session runs and back, and deleted only by a clean
+// exit (the tray's Exit, the game closing in wrapper mode, an in-app
+// restart, or Windows ending the session). Finding it at the next start
+// means the previous run ended without one — it crashed, or was killed —
+// and the phase says when: a start that never reached the window, an idle
+// window, or captions in progress (a Whisper pass on a GPU that takes the
+// process down is the classic). That start gets Windows' crash record
+// copied into error.log (CrashRecord) and, unless the window was merely
+// idle, a safe boot: no automatic captions until a human presses Start. A
+// crash can no longer be silent, and cannot loop.
 public static class BootSentinel
 {
+    public const string PhaseBoot = "boot", PhaseWindow = "window", PhaseCaptions = "captions";
+
     // Tests point this at a temp file so they never touch the real marker.
     internal static string? PathOverride { get; set; }
 
     private static string FilePath => PathOverride ?? Path.Combine(SttPaths.DataDir, "boot.inprogress");
+    private static readonly object Gate = new();
+    private static string? _version;    // set by Arm: this process owns the marker
+    private static string _startedAt = "";
 
-    public sealed record Unfinished(string Version, DateTime StartedAt, int Pid);
+    public sealed record Unfinished(string Version, DateTime StartedAt, int Pid, string Phase)
+    {
+        // "never reached the window" / "ended while captions were running" / …
+        public string How => Phase switch
+        {
+            PhaseCaptions => "ended while captions were running",
+            PhaseWindow => "ended without a clean exit while idle",
+            _ => "never reached the window",
+        };
+        // An idle window that was killed is nothing to guard against; the
+        // other two are the crash loops the safe boot exists for.
+        public bool WantsSafeBoot => Phase != PhaseWindow;
+    }
 
-    // Records this start; returns the previous start if it never finished.
+    // Records this start; returns the previous run if it never exited cleanly.
     public static Unfinished? Arm(string version)
     {
         Unfinished? previous = null;
-        try
+        lock (Gate)
         {
-            if (File.Exists(FilePath)) previous = Parse(File.ReadAllText(FilePath));
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, $"{version}|{DateTime.Now:o}|{Environment.ProcessId}");
+            try
+            {
+                if (File.Exists(FilePath)) previous = Parse(File.ReadAllText(FilePath));
+                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+                _version = version;
+                _startedAt = DateTime.Now.ToString("o");
+                File.WriteAllText(FilePath, Line(PhaseBoot));
+            }
+            catch { /* diagnostics must never affect startup */ }
         }
-        catch { /* diagnostics must never affect startup */ }
         return previous;
     }
 
-    public static void Clear()
+    // The run moved on (page connected, captions started or stopped).
+    public static void Mark(string phase)
     {
-        try { File.Delete(FilePath); } catch { }
+        lock (Gate)
+        {
+            if (_version == null) return;   // not armed in this process (tests, the update helper)
+            try { File.WriteAllText(FilePath, Line(phase)); } catch { }
+        }
     }
 
+    // A clean exit. Only this process's own marker is removed: a successor
+    // started by an in-app restart has armed its own by now. It is also
+    // final for this process: the controller is disposed after Main's Clear
+    // and stops a running session there, and that Stop must not write the
+    // marker back (the next start would report a crash that never was).
+    public static void Clear()
+    {
+        lock (Gate)
+        {
+            _version = null;
+            try
+            {
+                if (!File.Exists(FilePath)) return;
+                var owner = Parse(File.ReadAllText(FilePath));
+                if (owner.Pid == 0 || owner.Pid == Environment.ProcessId) File.Delete(FilePath);
+            }
+            catch { try { File.Delete(FilePath); } catch { } }
+        }
+    }
+
+    private static string Line(string phase) => $"{_version}|{_startedAt}|{Environment.ProcessId}|{phase}";
+
     // A marker with unreadable contents still means an unfinished start.
+    // Three fields is the format before 1.7.2 (no phase: a start).
     internal static Unfinished Parse(string text)
     {
         var parts = (text ?? "").Trim().Split('|');
-        if (parts.Length != 3) return new Unfinished("?", DateTime.MinValue, 0);
+        if (parts.Length is not (3 or 4)) return new Unfinished("?", DateTime.MinValue, 0, PhaseBoot);
         DateTime.TryParse(parts[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out var at);
         int.TryParse(parts[2], out var pid);
-        return new Unfinished(parts[0], at, pid);
+        var phase = parts.Length == 4 && parts[3] is PhaseWindow or PhaseCaptions ? parts[3] : PhaseBoot;
+        return new Unfinished(parts[0], at, pid, phase);
     }
+
+    // Tests: forget that this process armed anything.
+    internal static void ResetForTests() { lock (Gate) { _version = null; _startedAt = ""; } }
 }
 
 // Windows keeps the only record of a native crash: the Application log's
 // "Application Error" (1000) and ".NET Runtime" (1026, with the managed
-// stack) events. After an unfinished start, the entries naming this app
+// stack) events. After an unfinished run, the entries naming this app
 // are copied into error.log, where a user finds them without knowing Event
 // Viewer exists. Read through wevtutil (in every Windows) as XML — the
 // event schema is language-neutral, unlike the text format whose labels
@@ -76,9 +136,10 @@ public static class CrashRecord
                     : previous.StartedAt.AddMinutes(-1);
                 long windowMs = (long)Math.Clamp((DateTime.Now - since).TotalMilliseconds, 60_000, 7L * 24 * 3600 * 1000);
                 var events = FilterXml(Query(windowMs), "Chatterbox");
-                string who = $"start of {previous.Version} at {previous.StartedAt:yyyy-MM-dd HH:mm:ss} (pid {previous.Pid}) never reached the window";
+                string who = $"run of {previous.Version} started {previous.StartedAt:yyyy-MM-dd HH:mm:ss} (pid {previous.Pid}) {previous.How}";
                 ErrorLog.WriteNote("PreviousStart", events.Count == 0
-                    ? who + "; no Windows crash record found — it was probably closed or killed before the window loaded"
+                    ? who + "; no Windows crash record found — it was probably ended from outside " +
+                      "(Task Manager, a companion app) or the power went"
                     : who + "; Windows crash record:" + Environment.NewLine +
                       string.Join(Environment.NewLine + Environment.NewLine, events));
             }
@@ -101,7 +162,7 @@ public static class CrashRecord
                              $"and TimeCreated[timediff(@SystemTime) <= {windowMs}]]]");
         psi.ArgumentList.Add("/f:xml");
         psi.ArgumentList.Add("/rd:true");
-        psi.ArgumentList.Add("/c:30");
+        psi.ArgumentList.Add("/c:100");   // the run may have lasted hours: other apps' events count too
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("wevtutil did not start");
         var output = p.StandardOutput.ReadToEnd();
         if (!p.WaitForExit(10_000)) { try { p.Kill(); } catch { } }

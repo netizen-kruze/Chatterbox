@@ -210,22 +210,26 @@ public sealed class StandaloneSttController : IDisposable
     // be picked up explicitly. It waits for the page to connect: nothing
     // can then reach the WebView early, and a model load never holds the
     // window back. A fallback timer runs it anyway if the page never shows
-    // up. A safe boot (the previous start died before the window) skips
-    // it: a crash loop must need a human to press Start.
-    public void ArmBootReconcile(bool safeBoot)
+    // up. A safe boot (the previous run died before the window, or during
+    // captions) skips it: a crash loop must need a human to press Start.
+    // safeBootReason: how the previous run ended (BootSentinel.Unfinished.How)
+    // when that must keep captions from auto-starting; null for a normal boot.
+    public void ArmBootReconcile(string? safeBootReason)
     {
-        _safeBoot = safeBoot;
-        if (safeBoot) { _bootReconcileDone = 1; return; }
+        _safeBoot = safeBootReason != null;
+        _safeBootReason = safeBootReason;
+        if (_safeBoot) { _bootReconcileDone = 1; return; }
         _bootFallback = new System.Threading.Timer(_ => RunBootReconcile("fallback timer"), null, BootFallbackMs, Timeout.Infinite);
     }
+    private string? _safeBootReason;
 
     // The host calls this on the page's first message (window thread).
     public void UiConnected()
     {
         if (_safeBoot)
             _send("toast", new { ok = false, msg =
-                "Chatterbox didn't start cleanly last time, so captions were not auto-started this time — " +
-                @"press Start when ready. Details: %APPDATA%\Chatterbox\error.log" });
+                $"The last run of Chatterbox {_safeBootReason} (it crashed or was killed), so captions were not auto-started this time — " +
+                "press Start when ready. Details: " + Path.Combine(SttPaths.DataDir, "error.log") });
         // A first run that never touches a setting would otherwise make every
         // later launch wait for a "missing" settings file (the provisional-
         // defaults logic assumes a returning user has one). Write the defaults
@@ -329,6 +333,7 @@ public sealed class StandaloneSttController : IDisposable
     private const int StartupUpdateCheckDelayMs = 6000;
     // ── translation (LlamaTranslator): loaded at Start when enabled, freed at Stop ──
     private LlamaTranslator? _translator;
+    private bool _translateMissingToasted;   // the "not installed" toast, once per session
 
     private void SendUpdateState(string state, string? error = null, long received = 0, long total = 0)
     {
@@ -456,6 +461,17 @@ public sealed class StandaloneSttController : IDisposable
     }
 
     // ── translation ──────────────────────────────────────────────────────
+
+    // Why the installed GPU pack is not (yet) the one doing the work, for
+    // the Translate banner and the pack's install toast; "" when it is.
+    private static string TranslateGpuNote()
+    {
+        if (!SttTranslatePacks.Gpu.IsInstalled()) return "";
+        if (!LlamaTranslator.VulkanProbePresent) return "GPU pack installed, but " + LlamaTranslator.VulkanProbeNote + " — translation runs on the CPU until then.";
+        if (LlamaTranslator.NativeConfigured && !LlamaTranslator.ConfiguredWithVulkan) return "GPU pack installed — restart Chatterbox to use it.";
+        return "";
+    }
+
     private static bool TranslateReady(SttModelManager models) =>
         SttTranslatePacks.Cpu.IsInstalled() && models.IsInstalled(SttModelCatalog.Translation);
 
@@ -472,8 +488,14 @@ public sealed class StandaloneSttController : IDisposable
         if (!TranslateReady(_models))
         {
             relay.Translator = null;
-            _send("toast", new { ok = false, msg = "Translation is on, but the translation model and engine pack are not installed — captions run untranslated",
-                                 action = new { label = "Open Models", view = "models" } });
+            // Once per session, not on every settings change while it stays
+            // uninstalled.
+            if (!_translateMissingToasted)
+            {
+                _translateMissingToasted = true;
+                _send("toast", new { ok = false, msg = "Translation is on, but the translation model and engine pack are not installed — captions run untranslated",
+                                     action = new { label = "Open Models", view = "models" } });
+            }
             return;
         }
         bool gpu = SttTranslatePacks.Gpu.IsInstalled();
@@ -491,8 +513,13 @@ public sealed class StandaloneSttController : IDisposable
                 return;
             }
             _translator = translator;
+            // What the loader actually bound, not what is installed.
             BootLog.Append($"translation: {Path.GetFileName(translator.ModelPath)} loaded in {translator.LoadMs} ms " +
-                           $"({(gpu ? "Vulkan GPU" : $"CPU, {translator.Threads} threads")}) → {LlamaTranslator.LanguageName(_settings.TranslateTarget)}");
+                           $"({translator.Backend}) → {LlamaTranslator.LanguageName(_settings.TranslateTarget)}" +
+                           (translator.GpuUnavailableReason != null ? $"; GPU pack not used: {translator.GpuUnavailableReason}" : ""));
+            if (gpu && !translator.GpuActive)
+                _send("toast", new { ok = false, msg = "Translation runs on the CPU — " +
+                    (translator.GpuUnavailableReason ?? "the Vulkan build did not load (see last_boot.log's llama loader lines)") });
         }
         var tr = _translator;
         relay.ShowOriginal = _settings.TranslateShowOriginal;
@@ -503,6 +530,14 @@ public sealed class StandaloneSttController : IDisposable
 
     private void OnTranslated(string original, string translated) =>
         _send("sttTranslated", new { original, translated });
+
+    // The device the user chose, by NAME: the page sends the name it shows
+    // for the index, so a list that went stale (Windows renumbers its input
+    // devices when a USB microphone comes or goes) cannot make the index
+    // land on a different microphone — the name is re-resolved at Start
+    // (SttAudioDevices.ResolveInput).
+    private static string ChosenDeviceName(int index, string? pageName) =>
+        index < 0 ? "" : (!string.IsNullOrWhiteSpace(pageName) ? pageName : SttAudioDevices.InputNameAt(index));
 
     // Session work requested from the UI thread runs here: an engine load
     // takes seconds and would freeze the window (and Photino's message
@@ -713,14 +748,16 @@ public sealed class StandaloneSttController : IDisposable
             // Settings > About: the license documents live inside the
             // assembly (docs/*), not as loose files beside the exe.
             case "sttGetDocs":
-                _send("sttDocs", new
+                // Off the window thread: the machine profile asks the system
+                // about its hardware, which can take a moment the first time.
+                RunOffUiThread(() => _send("sttDocs", new
                 {
                     version = typeof(StandaloneSttController).Assembly.GetName().Version?.ToString(3),
                     readme = ReadEmbeddedDoc("docs/README.md"),
                     license = ReadEmbeddedDoc("docs/LICENSE.txt"),
                     notice = ReadEmbeddedDoc("docs/NOTICE.txt"),
                     machine = MachineProfile.Describe(),
-                });
+                }));
                 break;
 
             // Standalone-only: re-hash every installed catalog file against
@@ -730,10 +767,14 @@ public sealed class StandaloneSttController : IDisposable
                 {
                     int ok = 0;
                     var bad = new List<string>();
-                    foreach (var m in SttModelCatalog.Models.Where(_models.IsInstalled))
+                    // Every catalog file that is present, not only models that
+                    // count as installed: a truncated file is present, and
+                    // wrong, and must be reported rather than skipped.
+                    foreach (var m in SttModelCatalog.Models)
                     foreach (var f in m.Files)
                     {
                         var path = _models.PathFor(m, f);
+                        if (!File.Exists(path)) continue;
                         if (new FileInfo(path).Length == f.SizeBytes &&
                             SttModelManager.ComputeSha256(path) == f.Sha256) ok++;
                         else bad.Add($"{m.DisplayName} ({f.FileName})");
@@ -778,7 +819,7 @@ public sealed class StandaloneSttController : IDisposable
                         lock (_settingsLock)
                         {
                             _settings.InputDeviceIndex = devIdx;
-                            _settings.InputDeviceName = SttAudioDevices.InputNameAt(devIdx);
+                            _settings.InputDeviceName = ChosenDeviceName(devIdx, msg["deviceName"]?.ToString());
                             _settings.Engine = engineKind;
                             _settings.Save();
                         }
@@ -959,7 +1000,7 @@ public sealed class StandaloneSttController : IDisposable
                     lock (_settingsLock)
                     {
                         _settings.InputDeviceIndex = devIdx;
-                        _settings.InputDeviceName = SttAudioDevices.InputNameAt(devIdx);
+                        _settings.InputDeviceName = ChosenDeviceName(devIdx, msg["deviceName"]?.ToString());
                         _settings.Save();
                     }
                     SendSavedToast();
@@ -1153,8 +1194,9 @@ public sealed class StandaloneSttController : IDisposable
                                 _send("sttModelProgress", new { id, received, total });
                             }, packCt);
                             ReleaseDownload(id);
+                            var note = ok && ReferenceEquals(pack, SttTranslatePacks.Gpu) ? TranslateGpuNote() : "";
                             _send("toast", ok
-                                ? new { ok = true, msg = $"{pack.DisplayName} installed" }
+                                ? new { ok = note.Length == 0, msg = $"{pack.DisplayName} installed" + (note.Length > 0 ? " — " + note : "") }
                                 : new { ok = false, msg = error ?? "download failed" });
                             SendModels();
                             SendDevices();
@@ -1324,6 +1366,7 @@ public sealed class StandaloneSttController : IDisposable
         };
         _relay.OnLog += RouteSttLog;
         _relay.OnTextSent += text => _send("sttSent", new { text });
+        _translateMissingToasted = false;
         AttachTranslator();
         _relay.Start();
 
@@ -1360,6 +1403,7 @@ public sealed class StandaloneSttController : IDisposable
 
         _loading = false;
         _sessionStartedAt = Environment.TickCount64;
+        BootSentinel.Mark(BootSentinel.PhaseCaptions);   // a crash from here on is a crash DURING captions
         SendState();
 
         // Whisper on the CPU: say so at once, with the one-click fix for
@@ -1400,6 +1444,7 @@ public sealed class StandaloneSttController : IDisposable
             _translator = null;
             _service?.Dispose();
             _service = null;
+            BootSentinel.Mark(BootSentinel.PhaseWindow);
             SendState();
             _meterPct = -1;
             _send("sttMeter", new { level = 0f });
@@ -1559,7 +1604,12 @@ public sealed class StandaloneSttController : IDisposable
             translateTarget = _settings.TranslateTarget,
             translateShowOriginal = _settings.TranslateShowOriginal,
             translateReady = TranslateReady(_models),
-            translateGpu = SttTranslatePacks.Gpu.IsInstalled(),
+            // "Runs on your GPU" only when it can: the pack AND the tool
+            // LLamaSharp detects Vulkan with, and not already bound to the
+            // CPU build in this run.
+            translateGpu = SttTranslatePacks.Gpu.IsInstalled() && LlamaTranslator.VulkanProbePresent &&
+                           !(LlamaTranslator.NativeConfigured && !LlamaTranslator.ConfiguredWithVulkan),
+            translateNote = TranslateGpuNote(),
             translateLanguages = LlamaTranslator.Languages.Select(l => new { code = l.Code, name = l.Name }),
             parakeetAvailable = SttEnginePack.IsInstalled() && _models.IsInstalled(SttModelCatalog.Find(SttModelCatalog.ParakeetId)!),
             modelDir = SttPaths.ModelDir,

@@ -8,8 +8,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const DEMO = location.search.includes('demo');
 
 function send(obj) {
-  if (DEMO) return;
-  try { window.external.sendMessage(JSON.stringify(obj)); } catch (e) { /* host not ready */ }
+  if (DEMO) return true;
+  try { window.external.sendMessage(JSON.stringify(obj)); return true; } catch (e) { return false; /* host not ready */ }
 }
 
 // ── view switching ─────────────────────────────────────────────
@@ -113,11 +113,18 @@ function setPace(p) {
 }
 $('btnStartStop').addEventListener('click', () => {
   if (running) { send({ action: 'sttStop' }); }
-  else { resetStage(); send({ action: 'sttStart', deviceIndex: parseInt($('selDevice').value ?? '0', 10) }); }
+  else { resetStage(); send({ action: 'sttStart', deviceIndex: parseInt($('selDevice').value ?? '0', 10), deviceName: chosenDeviceName() }); }
 });
 
 // ── devices / settings payload ─────────────────────────────────
 let dev = null; // last sttDevices payload
+// The name shown for the chosen microphone, sent with the index: Windows
+// renumbers its input devices when one is plugged in or out, so a list
+// that went stale could otherwise pick another device (the host resolves
+// by name).
+function chosenDeviceName() {
+  return $('selDevice').selectedOptions[0]?.textContent ?? '';
+}
 function renderDevices(p) {
   dev = p;
   // The voice detector is not a first-run matter: the backend fetches it on
@@ -152,6 +159,7 @@ function renderDevices(p) {
   $('transStatus').textContent = p.translateReady
     ? (p.translateGpu ? 'Translation model and engine installed — runs on your GPU (Vulkan).' : 'Translation model and engine installed — runs on your CPU.')
     : 'Needs the translation model and the engine pack from the Models screen.';
+  if (p.translateReady && p.translateNote) $('transStatus').textContent += ' ' + p.translateNote;
   $('transDot').className = 'dot ' + (p.translateReady ? 'ok' : 'warn');
   $('btnTransModels').hidden = !!p.translateReady;
   const wm = $('selWhisperModel');
@@ -489,7 +497,7 @@ $('btnTransModels').addEventListener('click', () => showView('models'));
 $('selWhisperModel').addEventListener('change', () =>
   send({ action: 'sttConfig', whisperModel: $('selWhisperModel').value }));
 $('selDevice').addEventListener('change', () =>
-  send({ action: 'sttSetInputDevice', deviceIndex: parseInt($('selDevice').value, 10) }));
+  send({ action: 'sttSetInputDevice', deviceIndex: parseInt($('selDevice').value, 10), deviceName: chosenDeviceName() }));
 $('selRate').addEventListener('change', () =>
   send({ action: 'sttConfig', intervalMs: parseInt($('selRate').value, 10) }));
 
@@ -518,7 +526,12 @@ function toast(ok, msg, action) {
     el.appendChild(b);
   }
   el.addEventListener('click', () => el.remove());
-  $('toasts').appendChild(el);
+  // An evening of auto-start cycles must not stack the same advice: a
+  // repeated message replaces its older copy, and at most four stay.
+  const box = $('toasts');
+  [...box.children].filter(t => t.querySelector('.msg')?.textContent === msg).forEach(t => t.remove());
+  while (box.children.length >= 4) box.firstElementChild.remove();
+  box.appendChild(el);
   if (ok) setTimeout(() => el.remove(), 5000);
 }
 
@@ -562,11 +575,14 @@ function hookBridge() {
   } catch (e) { /* not ready yet */ }
   return bridgeHooked;
 }
+let docsRequested = false;
 function requestState(attempt) {
   if (DEMO || stateReceived) return;
-  hookBridge();
+  const hooked = hookBridge();
   send({ action: 'sttGetState' });
-  send({ action: 'sttGetDocs' });
+  // The docs payload is tens of KB (the README): asked for once the bridge
+  // can answer, not again on every retry.
+  if (hooked && !docsRequested) docsRequested = send({ action: 'sttGetDocs' });
   if (attempt < 40) setTimeout(() => requestState(attempt + 1), attempt < 10 ? 300 : 1000);
 }
 
@@ -585,7 +601,7 @@ if (DEMO) {
     autoStartFriends: [{ id: 'usr_2fa4aaaa-1111-2222-3333-4444555591c3', name: 'Nova_Signs' }, { id: '', name: 'Moth_man42' }],
     whisperAvailable: true, whisperModelName: 'ggml-large-v3-turbo.bin', whisperModels: ['ggml-large-v3-turbo.bin'],
     whisperModelSetting: '', vadAvailable: true, parakeetAvailable: true, modelDir: '',
-    translateEnabled: true, translateTarget: 'ja', translateShowOriginal: false, translateReady: true, translateGpu: true,
+    translateEnabled: true, translateTarget: 'ja', translateShowOriginal: false, translateReady: true, translateGpu: true, translateNote: '',
     translateLanguages: [{ code: 'ja', name: 'Japanese' }, { code: 'ko', name: 'Korean' }, { code: 'es', name: 'Spanish' }, { code: 'de', name: 'German' }] } }));
   onMessage(JSON.stringify({ type: 'sttPlayers', payload: { game: true, log: 'writing', world: 'wrld_demo', worldName: 'The Black Cat', players: [
     { id: 'usr_c48faaaa-0000-0000-0000-00000000a0c8', name: 'PixelFerret' },

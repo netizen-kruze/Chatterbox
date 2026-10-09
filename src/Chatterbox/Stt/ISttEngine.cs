@@ -74,6 +74,14 @@ public static class SttPaths
         get => _modelDir ?? System.IO.Path.Combine(DataDir, "models", "stt");
         set => _modelDir = value;
     }
+
+    // The whisper natives Program unpacks beside the exe at every start,
+    // where Whisper.net's loader probes (runtimes\<rid> under the app
+    // folder): the AVX2/FMA build, and the no-AVX build the loader takes
+    // instead on a CPU without those instructions.
+    public const string Rid = "win-x64";
+    public static string NativeDir => System.IO.Path.Combine(AppContext.BaseDirectory, "runtimes", Rid);
+    public static string NoAvxNativeDir => System.IO.Path.Combine(AppContext.BaseDirectory, "runtimes", "noavx", Rid);
 }
 
 // Shared PCM helpers for engines and the VAD.

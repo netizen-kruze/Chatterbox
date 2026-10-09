@@ -104,11 +104,27 @@ away (restore after this section).
       error (single instance).
 - [ ] Crash recovery: with Chatterbox closed, create an empty
       `%APPDATA%\Chatterbox\boot.inprogress`, then launch → a red toast
-      says the last start didn't finish, captions do NOT auto-start (even
-      with a watched player present), `last_boot.log` has the "previous
-      start … never reached the window" line and `error.log` a
+      says the last run never reached the window, captions do NOT
+      auto-start (even with a watched player present), `last_boot.log` has
+      the "previous run … never reached the window" line and `error.log` a
       "PreviousStart" entry (with Windows' crash record when one exists).
       The launch after that is normal again.
+- [ ] **Crash during captions**: Start captions, then end Chatterbox.exe
+      in Task Manager (End task) → the next launch shows a red toast "The
+      last run of Chatterbox ended while captions were running …",
+      captions do NOT auto-start, and `last_boot.log` has "SAFE BOOT". The
+      same with the window idle (no captions) → `last_boot.log` and
+      `error.log` note the run "ended without a clean exit while idle",
+      but there is no safe boot. While Chatterbox runs, `boot.inprogress`
+      ends in `|window`, or `|captions` during a session.
+- [ ] **Sign-out / shutdown counts as a clean exit**: with Chatterbox in
+      the tray, sign out of Windows and back in → the next launch has no
+      "previous run" line in `last_boot.log`, no red toast, and the old
+      `last_boot.log` ended with "exit: Windows is ending the session".
+- [ ] **Tray Exit and the game closing are logged**: `last_boot.log` says
+      "exit requested by the tray menu's Exit" (or "VRChat exiting (Steam
+      launch-option mode)"), and the process is gone within 10 s even if
+      the window hangs ("exit: hard exit after 10 s").
 
 ## H. Translation (1.7.0)
 
@@ -131,6 +147,13 @@ away (restore after this section).
 - [ ] Switching translation off while captions run stops translating at
       the next sentence; on again resumes (the model loads once, 1–3 s).
 - [ ] Stop frees the model (Task Manager: memory drops by about 1.2 GB).
+- [ ] **GPU claim is truthful**: with the Vulkan pack installed, the
+      `translation:` line in `last_boot.log` says "Vulkan GPU" only when the
+      `llama loader:` lines show `native\vulkan\llama.dll` was loaded; if it
+      says "CPU (avx2), N threads", the Translate banner and a toast at
+      Start say why (no `vulkaninfo.exe` in `System32`, or a restart is
+      needed). Installing the Vulkan pack while translation already ran in
+      this session → its toast says "restart Chatterbox to use it".
 
 ## E. Coexistence
 
@@ -187,6 +210,22 @@ away (restore after this section).
       the partial file is removed.
 - [ ] **Settings folder read-only or disk full**: changing a setting shows
       a red "Settings could not be saved — …" toast instead of "Saved".
+- [ ] **Microphone list gone stale**: with two USB microphones plugged in,
+      open the Captions screen, unplug the first one WITHOUT reopening the
+      list, pick the second from the stale list and Start → captions use
+      the second microphone (the level meter moves with it; the next
+      start's `last_boot.log` mic line names it), never a different device.
+- [ ] **Old CPU (no AVX2/FMA)**, if one is at hand: `last_boot.log` says
+      "whisper natives: this CPU lacks AVX2/FMA — the no-AVX build in …
+      is used", and both engines caption. On any other CPU it says "AVX2+FMA
+      present". `runtimes\noavx\win-x64` exists beside the exe either way.
+- [ ] **Engine pack resumes**: disconnect the network in the middle of the
+      Parakeet engine download → the toast ends in "(a retry continues
+      where it stopped)" and `parakeet-engine.download` stays beside the
+      exe; download again → it continues and verifies. Delete removes it.
+- [ ] **Repeated toasts do not pile up**: the same message shown twice
+      (e.g. Start with translation on but not installed, Stop, Start)
+      leaves one toast, and never more than four are on screen.
 
 ## F. Portable zip (ideally on the second machine)
 
