@@ -271,6 +271,10 @@ public sealed class StandaloneSttController : IDisposable
 
     // ── updates (AppUpdater): Settings → Updates, and the optional startup check ──
     private readonly AppUpdater _updater = new();
+    // The verified new exe waiting beside the running one, if an update
+    // was installed in this run — Program starts it as the swap helper
+    // after the window has closed.
+    public string? PendingUpdateSwap => _updater.PendingSwap;
     private UpdateInfo? _update;            // the newer release the last check found
     private Version? _latestSeen;           // what the last successful check called latest
     private string _updateState = AppUpdater.IsConfigured ? "idle" : "unconfigured";
@@ -383,9 +387,11 @@ public sealed class StandaloneSttController : IDisposable
                 return;
             }
             SendUpdateState("installing");
-            string? applyError;
-            // Nothing may start a session while the exe changes underneath.
-            lock (_sessionLock) { applyError = _updater.Apply(staged, u.Version); }
+            // The exe is not touched here: the staged exe swaps the files
+            // after this process has exited (AppUpdater.RunSwapHelper,
+            // started by Program once the window has closed), so nothing
+            // changes underneath a running process.
+            var applyError = _updater.PrepareSwap(staged, u.Version);
             if (applyError != null)
             {
                 BootLog.Append($"update to {u.Version.ToString(3)} failed: {applyError}");
@@ -393,7 +399,7 @@ public sealed class StandaloneSttController : IDisposable
                 _send("toast", new { ok = false, msg = $"Update failed — {applyError}" });
                 return;
             }
-            BootLog.Append($"update: {u.Version.ToString(3)} installed in place of {AppUpdater.CurrentVersion.ToString(3)}; restarting");
+            BootLog.Append($"update: {u.Version.ToString(3)} downloaded and verified, staged beside the exe; restarting to swap it in");
             RestartRequested?.Invoke($"to finish updating to {u.Version.ToString(3)}");
         }
         catch (Exception ex)

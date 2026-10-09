@@ -210,12 +210,18 @@ away (restore after this section).
       `SHA-256: <hash of that zip>`) — and launch a copy of the app with
       `--update-url http://127.0.0.1:8000/latest.json --data-dir <throwaway>`.
       Check → "Version X.Y.Z is available"; Update now → progress bar,
-      "Installing…", Chatterbox restarts by itself; the new instance toasts
-      "Chatterbox updated from … to X.Y.Z", `last_boot.log` carries the
-      "update:" lines, and no `Chatterbox.exe.old` / `.new` is left beside
-      the exe. A wrong SHA-256 in the notes → "SHA-256 mismatch", nothing
-      replaced. Update now while captions run → "Stop captions before
-      updating".
+      "Installing…", Chatterbox exits and comes back by itself (1.7.2: the
+      staged `Chatterbox.exe.new` runs as the helper — Task Manager shows
+      it for a second — waits for the old process and its
+      msedgewebview2 to be gone, swaps the files and starts the new
+      version; the old exe is never renamed while it runs); the new
+      instance toasts "Chatterbox updated from … to X.Y.Z", `last_boot.log`
+      carries the "update:" lines, and no `Chatterbox.exe.old` / `.new` is
+      left beside the exe. A wrong SHA-256 in the notes → "SHA-256
+      mismatch", nothing replaced. Update now while captions run → "Stop
+      captions before updating". From a folder you can't write to
+      (Program Files) → "Update failed — the app folder can't be written",
+      the app keeps running.
 
 ---
 Record results here with date + commit.

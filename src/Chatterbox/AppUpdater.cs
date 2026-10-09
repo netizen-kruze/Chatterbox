@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -31,10 +33,27 @@ public sealed record UpdateCheck(UpdateInfo? Update, Version? Latest, string? Er
 // It counts as an update when its tag is a higher version than this build
 // and it carries a win-x64 zip plus a SHA-256 line in its notes (the
 // publish checklist puts one there). Install: the zip is downloaded, hashed
-// against that line, and Chatterbox.exe is taken out of it; the running exe
-// is renamed aside — Windows allows that — the new one takes its name, and
-// the app restarts. The next start removes the old file and reports the
-// update in the boot log and a toast.
+// against that line, and Chatterbox.exe is taken out of it and staged
+// beside the running exe as Chatterbox.exe.new; a marker records the
+// pending update; the app exits and the STAGED EXE runs as a helper
+// (--finish-update, RunSwapHelper): it waits until this process and its
+// WebView2 browser are gone, renames the old exe aside, copies itself
+// under the real name and starts the new version. The next start removes
+// the old file and the staged one and reports the update in the boot log
+// and a toast.
+//
+// Why not swap in place and then restart (as 1.6.0–1.7.1 did)? A
+// single-file .NET exe is its own assembly store: every assembly the app
+// has not touched yet is read from the executable, by the path the host
+// resolved at startup, the moment it is first needed. Windows lets a
+// running exe be renamed, so the rename succeeded — and from then on the
+// next first-time load opened the NEW file at the OLD bundle's offsets
+// (verified on the Linux build, which dies with FileNotFoundException;
+// the runtime's bundle reader is the same on both). The swap "worked"
+// only as long as nothing new was loaded before the restart, which
+// depends on what the session happened to do. So no managed code may run
+// in a process whose file has changed; the helper copies rather than
+// moves, so its own file never changes either.
 //
 // Privacy: the request carries nothing but the app's name and version in
 // its User-Agent, like every model download. The startup check is a
@@ -224,23 +243,30 @@ public sealed class AppUpdater
         }
     }
 
-    // Puts the staged exe in place. The running exe keeps running under
-    // its new name (Chatterbox.exe.old); the caller restarts the app.
+    // The staged exe waiting beside the running one, once PrepareSwap
+    // accepted it; null until then. Program starts it as the swap helper
+    // when the window has closed.
+    public string? PendingSwap { get; private set; }
+
+    // Accepts the staged exe for the swap: checks it is there, beside the
+    // running exe, in a folder that can be written, records the pending
+    // update in the marker the next start reads, and remembers the file
+    // as PendingSwap. The files themselves are not touched — the helper
+    // does that after this process has exited (see the note at the top).
     // Returns the error, or null.
-    public string? Apply(string stagedExe, Version to)
+    public string? PrepareSwap(string stagedExe, Version to)
     {
-        var old = ExePath + ".old";
         try
         {
             if (!File.Exists(stagedExe)) return "the downloaded file is gone";
-            if (File.Exists(old)) File.Delete(old);
-            File.Move(ExePath, old);
-            try { File.Move(stagedExe, ExePath); }
-            catch
-            {
-                File.Move(old, ExePath);   // the running exe gets its name back
-                throw;
-            }
+            var dir = Path.GetDirectoryName(Path.GetFullPath(ExePath))!;
+            if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(stagedExe)), dir, StringComparison.OrdinalIgnoreCase))
+                return "the downloaded file is not beside the running exe";
+            // The helper renames and copies in this folder; say so now
+            // rather than fail after the app has already quit.
+            var probe = Path.Combine(dir, $".chatterbox-write-test-{Environment.ProcessId}");
+            try { File.WriteAllText(probe, ""); File.Delete(probe); }
+            catch (Exception ex) { return $"the app folder can't be written ({ex.Message})"; }
             Directory.CreateDirectory(Path.GetDirectoryName(MarkerPath)!);
             File.WriteAllText(MarkerPath, JsonConvert.SerializeObject(new
             {
@@ -248,6 +274,7 @@ public sealed class AppUpdater
                 to = to.ToString(3),
                 at = DateTime.UtcNow.ToString("o"),
             }));
+            PendingSwap = stagedExe;
             return null;
         }
         catch (Exception ex)
@@ -256,15 +283,132 @@ public sealed class AppUpdater
         }
     }
 
+    // ── the swap, done by the staged exe after this process has exited ──
+
+    public const string FinishSwitch = "--finish-update";
+
+    // What the helper is told: the exe to take over, the pid to outlive,
+    // whether to start the new version afterwards, and that start's own
+    // arguments (the forwarded test switches).
+    public sealed record HelperRequest(string Exe, int WaitForPid, bool Relaunch, string[] RelaunchArgs);
+
+    public static List<string> HelperArgs(string exe, int waitForPid, bool relaunch, IEnumerable<string> relaunchArgs)
+    {
+        var list = new List<string> { FinishSwitch, exe, waitForPid.ToString(CultureInfo.InvariantCulture), relaunch ? "1" : "0" };
+        list.AddRange(relaunchArgs);
+        return list;
+    }
+
+    // null when these are not helper arguments.
+    public static HelperRequest? ParseHelperArgs(string[] args)
+    {
+        if (args.Length < 4 || args[0] != FinishSwitch) return null;
+        if (!int.TryParse(args[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pid)) return null;
+        return new HelperRequest(args[1], pid, args[3] == "1", args[4..]);
+    }
+
+    // Starts the staged exe as the helper for this process; it does its
+    // work once this process is gone. Returns the error, or null.
+    public static string? StartSwapHelper(string stagedExe, string exe, bool relaunch, IEnumerable<string> relaunchArgs)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(stagedExe)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
+            };
+            foreach (var a in HelperArgs(exe, Environment.ProcessId, relaunch, relaunchArgs)) psi.ArgumentList.Add(a);
+            Process.Start(psi)?.Dispose();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    // The helper's whole life — Program hands "--finish-update …" here
+    // before anything else happens: wait for the old process (bounded; a
+    // hung exit must not hold the update forever) and its browser to be
+    // gone, swap, start the new version under its real name, leave.
+    public static int RunSwapHelper(string[] args)
+    {
+        var req = ParseHelperArgs(args);
+        if (req == null) return 2;
+        // Logs go where the app's go (--data-dir is among the forwarded
+        // arguments when a test instance updates).
+        int d = Array.IndexOf(req.RelaunchArgs, "--data-dir");
+        if (d >= 0 && d + 1 < req.RelaunchArgs.Length)
+            try { SttPaths.DataDir = Path.GetFullPath(req.RelaunchArgs[d + 1]); } catch { }
+        try
+        {
+            using var old = Process.GetProcessById(req.WaitForPid);
+            old.WaitForExit(60_000);
+        }
+        catch { /* already gone */ }
+        WebViewProcesses.WaitForExit(req.WaitForPid, 10_000);
+        var error = PerformSwap(req.Exe, Environment.ProcessPath ?? "");
+        if (error != null) ErrorLog.WriteNote("AppUpdater.Helper", error);
+        if (!req.Relaunch) return error == null ? 0 : 1;
+        try
+        {
+            var psi = new ProcessStartInfo(req.Exe)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(req.Exe) ?? "",
+            };
+            foreach (var a in req.RelaunchArgs) psi.ArgumentList.Add(a);
+            psi.ArgumentList.Add("--after");
+            psi.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+            Process.Start(psi)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.WriteEntry("AppUpdater.Helper", ex);
+            return 1;
+        }
+        return error == null ? 0 : 1;
+    }
+
+    // The swap itself, run by the helper from its own staged file: the exe
+    // to replace is renamed aside (its process has exited by now) and the
+    // helper's OWN file is COPIED under that name — never moved, so the
+    // file the helper runs from stays where its loader expects it. If the
+    // copy fails, the old exe gets its name back. Returns the error, or
+    // null.
+    public static string? PerformSwap(string exe, string stagedSelf)
+    {
+        var old = exe + ".old";
+        try
+        {
+            if (!File.Exists(stagedSelf)) return $"the staged file is gone ({stagedSelf})";
+            if (File.Exists(old)) File.Delete(old);
+            File.Move(exe, old);
+            try { File.Copy(stagedSelf, exe, overwrite: true); }
+            catch
+            {
+                try { File.Move(old, exe); } catch { }
+                throw;
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"could not replace {Path.GetFileName(exe)} — {ex.Message}";
+        }
+    }
+
     // Called at boot: clears what the previous version left behind (its
-    // exe renamed aside, or a download that never got installed) and
-    // reports the update it finished, if any.
+    // exe renamed aside, the staged exe that ran as the helper, or a
+    // download that never got installed) and reports the update it
+    // finished, if any.
     public string? FinishPendingUpdate()
     {
         foreach (var leftover in new[] { ExePath + ".old", ExePath + ".new" })
         {
             try { if (File.Exists(leftover)) File.Delete(leftover); }
-            catch { /* still held by the old process — the next start gets it */ }
+            catch { /* still held by the old process or the helper — the next start gets it */ }
         }
         try
         {
@@ -276,7 +420,7 @@ public sealed class AppUpdater
             var now = CurrentVersion.ToString(3);
             return now == to
                 ? $"updated from {from} to {to}"
-                : $"update to {to} was applied, but this is version {now}";
+                : $"update to {to} was prepared, but this is version {now} — the exe was not swapped";
         }
         catch (Exception ex)
         {

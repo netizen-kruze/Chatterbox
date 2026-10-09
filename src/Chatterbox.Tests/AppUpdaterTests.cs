@@ -214,10 +214,10 @@ public class AppUpdaterTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_appDir, "Chatterbox.exe.new")));
     }
 
-    // ── apply + the next start ──
+    // ── prepare, the helper's swap, and the next start ──
 
     [Fact]
-    public void Apply_SwapsTheExeAndTheNextStartCleansUp()
+    public void PrepareSwap_StagesWithoutTouchingTheRunningExe()
     {
         var oldBytes = new byte[] { 1, 1, 1 };
         var newBytes = new byte[] { 2, 2, 2, 2 };
@@ -226,27 +226,95 @@ public class AppUpdaterTests : IDisposable
         File.WriteAllBytes(staged, newBytes);
         var updater = Updater(new FakeHandler());
 
-        Assert.Null(updater.Apply(staged, new Version(99, 1, 2)));
-        Assert.Equal(newBytes, File.ReadAllBytes(_exe));
-        Assert.Equal(oldBytes, File.ReadAllBytes(_exe + ".old"));
-        Assert.False(File.Exists(staged));
+        Assert.Null(updater.PendingSwap);
+        Assert.Null(updater.PrepareSwap(staged, new Version(99, 1, 2)));
+        // Nothing moved: the process that runs _exe keeps reading its own
+        // file until it has exited (see the note in AppUpdater).
+        Assert.Equal(oldBytes, File.ReadAllBytes(_exe));
+        Assert.Equal(newBytes, File.ReadAllBytes(staged));
+        Assert.False(File.Exists(_exe + ".old"));
+        Assert.Equal(staged, updater.PendingSwap);
         Assert.True(File.Exists(_marker));
+        var marker = JObject.Parse(File.ReadAllText(_marker));
+        Assert.Equal(AppUpdater.CurrentVersion.ToString(3), marker["from"]?.ToString());
+        Assert.Equal("99.1.2", marker["to"]?.ToString());
+    }
+
+    [Fact]
+    public void TheHelperCopiesItselfOverTheExeAndKeepsItsOwnFile()
+    {
+        var oldBytes = new byte[] { 1, 1, 1 };
+        var newBytes = new byte[] { 2, 2, 2, 2 };
+        File.WriteAllBytes(_exe, oldBytes);
+        var staged = _exe + ".new";
+        File.WriteAllBytes(staged, newBytes);
+        var updater = Updater(new FakeHandler());
+        Assert.Null(updater.PrepareSwap(staged, new Version(99, 1, 2)));
+
+        // What the staged exe does once the old process is gone.
+        Assert.Null(AppUpdater.PerformSwap(_exe, staged));
+        Assert.Equal(newBytes, File.ReadAllBytes(_exe));          // the new exe under the real name
+        Assert.Equal(oldBytes, File.ReadAllBytes(_exe + ".old")); // the old one aside
+        Assert.Equal(newBytes, File.ReadAllBytes(staged));        // the helper's own file, untouched
 
         // The "next start" (same test build, so the version doesn't match 99.1.2).
         var note = updater.FinishPendingUpdate();
         Assert.Contains("99.1.2", note);
         Assert.False(File.Exists(_exe + ".old"));
+        Assert.False(File.Exists(staged));
         Assert.False(File.Exists(_marker));
         Assert.Null(updater.FinishPendingUpdate());   // nothing twice
     }
 
     [Fact]
-    public void Apply_WithoutAStagedFile_LeavesTheExeAlone()
+    public void TheHelperWithoutItsStagedFileLeavesTheExeAlone()
     {
         File.WriteAllBytes(_exe, new byte[] { 7 });
-        var error = Updater(new FakeHandler()).Apply(_exe + ".new", new Version(99, 0, 0));
-        Assert.NotNull(error);
+        var error = AppUpdater.PerformSwap(_exe, _exe + ".new");
+        Assert.Contains("staged file is gone", error);
         Assert.Equal(new byte[] { 7 }, File.ReadAllBytes(_exe));
+        Assert.False(File.Exists(_exe + ".old"));
+    }
+
+    [Fact]
+    public void HelperArgumentsRoundTripWithSpacesAndForwardedSwitches()
+    {
+        var exe = Path.Combine("C:\\Users\\Some One\\Chatterbox", "Chatterbox.exe");
+        var args = AppUpdater.HelperArgs(exe, 4242, relaunch: true, new[] { "--data-dir", "D:\\x y", "--assume-vrchat-running" });
+        Assert.Equal(AppUpdater.FinishSwitch, args[0]);
+        var req = AppUpdater.ParseHelperArgs(args.ToArray());
+        Assert.NotNull(req);
+        Assert.Equal(exe, req!.Exe);
+        Assert.Equal(4242, req.WaitForPid);
+        Assert.True(req.Relaunch);
+        Assert.Equal(new[] { "--data-dir", "D:\\x y", "--assume-vrchat-running" }, req.RelaunchArgs);
+        Assert.False(AppUpdater.ParseHelperArgs(AppUpdater.HelperArgs(exe, 1, relaunch: false, Array.Empty<string>()).ToArray())!.Relaunch);
+        Assert.Null(AppUpdater.ParseHelperArgs(new[] { "--data-dir", "x" }));
+        Assert.Null(AppUpdater.ParseHelperArgs(new[] { AppUpdater.FinishSwitch, exe, "not-a-pid", "1" }));
+        Assert.Null(AppUpdater.ParseHelperArgs(new[] { AppUpdater.FinishSwitch, exe }));
+    }
+
+    [Fact]
+    public void PrepareSwap_WithoutAStagedFile_LeavesTheExeAlone()
+    {
+        File.WriteAllBytes(_exe, new byte[] { 7 });
+        var updater = Updater(new FakeHandler());
+        var error = updater.PrepareSwap(_exe + ".new", new Version(99, 0, 0));
+        Assert.NotNull(error);
+        Assert.Null(updater.PendingSwap);
+        Assert.Equal(new byte[] { 7 }, File.ReadAllBytes(_exe));
+        Assert.False(File.Exists(_marker));
+    }
+
+    [Fact]
+    public void PrepareSwap_RefusesAFileThatIsNotBesideTheExe()
+    {
+        File.WriteAllBytes(_exe, new byte[] { 7 });
+        var stray = Path.Combine(_dir, "Chatterbox.exe.new");   // the data folder, not the app folder
+        File.WriteAllBytes(stray, new byte[] { 8 });
+        var updater = Updater(new FakeHandler());
+        Assert.Contains("beside", updater.PrepareSwap(stray, new Version(99, 0, 0)));
+        Assert.Null(updater.PendingSwap);
         Assert.False(File.Exists(_marker));
     }
 }

@@ -133,8 +133,9 @@ was also accurate. The picker lists the languages it does best.
 
 **Settings → Updates → Check for updates** asks the project's GitHub
 Releases page for a newer version and installs it in place: the zip is
-downloaded, checked against the SHA-256 published with the release, the
-exe is swapped and Chatterbox restarts. **Check when Chatterbox starts**
+downloaded, checked against the SHA-256 published with the release, and
+the new exe is put beside the running one; Chatterbox then exits, the new
+exe takes the old one's name and the new version starts. **Check when Chatterbox starts**
 (on by default since 1.7.0) tells you at startup when a new version
 exists — it never installs anything by itself; switch it off under
 Settings → Updates if you'd rather check by hand. Your settings, auto-start players, and
@@ -254,6 +255,14 @@ what it ran on.
 
 ## What's new
 
+- **1.7.2** — **the exe is never changed under a running process.** A
+  single-file .NET exe reads every assembly it has not used yet from its
+  own file, so the in-app update, which renamed the running exe aside and
+  put the new one under its name before restarting, only worked as long
+  as nothing new was loaded in between. Now the downloaded exe is staged
+  beside the running one, Chatterbox exits, and the staged exe does the
+  swap itself (waiting for the old process and its WebView2 browser to be
+  gone) and then starts the new version.
 - **1.7.1** — the translator gets its own **Translate** tab on the left
   rail: install-status banner with an Open Models button, the switch, the
   language, "show the original too", and the last translation.

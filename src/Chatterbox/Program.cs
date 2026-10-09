@@ -57,6 +57,10 @@ internal static class Program
         _bootTick = Environment.TickCount64;
         _args = args;
         InstallCrashHandlers();
+        // Started as the update helper (the staged exe, by the instance
+        // that just quit): swap and relaunch, nothing else — before the
+        // mutex, the WebView2 check or any window (AppUpdater explains).
+        if (args.Length > 0 && args[0] == AppUpdater.FinishSwitch) return AppUpdater.RunSwapHelper(args);
         WaitForPredecessor(args);
         // Live captions are latency work: trade a little memory for GC
         // pauses that stay short during long sessions.
@@ -270,7 +274,7 @@ internal static class Program
         _window.Load(Path.Combine(UiDir, "wwwroot", "index.html"));
         _window.WaitForClose();
         _exiting = true;
-        if (_restartWhy != null) LaunchSuccessor(_restartWhy);
+        if (_restartWhy != null) LaunchSuccessor(_restartWhy, ctrl.PendingUpdateSwap);
         BootSentinel.Clear();
         return 0;
     }
@@ -350,23 +354,40 @@ internal static class Program
     }
 
     // Starts the next instance of this exe, which waits for this process
-    // (--after) before taking the single-instance mutex. Only the
-    // test/option flags are carried over: in Steam wrapper mode args[0] is
-    // the game's exe, and the restarted app must not launch the game again.
-    private static void LaunchSuccessor(string why)
+    // (--after) before taking the single-instance mutex. After an update
+    // the staged exe is started instead, as the helper that swaps the
+    // files once this process and its browser are gone and then starts
+    // the new version (AppUpdater.RunSwapHelper) — this exe is never
+    // renamed or replaced while it runs. Only the test/option flags are
+    // carried over: in Steam wrapper mode args[0] is the game's exe, and
+    // the restarted app must not launch the game again.
+    private static void LaunchSuccessor(string why, string? pendingSwap)
     {
         try
         {
+            var exe = Environment.ProcessPath ?? throw new InvalidOperationException("no process path");
+            var args = ForwardedArgs(_args).ToList();
+            if (pendingSwap != null)
+            {
+                if (AppUpdater.StartSwapHelper(pendingSwap, exe, relaunch: true, args) is { } helperError)
+                {
+                    // Without the helper the old version comes back; the
+                    // next start clears the staged file and the marker
+                    // explains that the swap did not happen.
+                    BootLog.Append($"update: the staged exe could not be started as the helper ({helperError}); restarting without the update");
+                    ErrorLog.WriteNote("RestartApp", "update helper failed to start: " + helperError);
+                }
+                else return;
+            }
             // The browser process goes a moment after the window; the
             // successor must not attach to it.
             WebViewProcesses.WaitForExit(Environment.ProcessId, 10_000);
-            var exe = Environment.ProcessPath ?? throw new InvalidOperationException("no process path");
             var psi = new System.Diagnostics.ProcessStartInfo(exe)
             {
                 UseShellExecute = false,
                 WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
             };
-            foreach (var a in ForwardedArgs(_args)) psi.ArgumentList.Add(a);
+            foreach (var a in args) psi.ArgumentList.Add(a);
             psi.ArgumentList.Add("--after");
             psi.ArgumentList.Add(Environment.ProcessId.ToString());
             System.Diagnostics.Process.Start(psi)?.Dispose();
