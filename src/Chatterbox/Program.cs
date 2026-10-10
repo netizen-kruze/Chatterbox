@@ -45,6 +45,10 @@ internal static class Program
     private static volatile bool _windowUp;
     private static long _bootTick;
     private const int PageConnectWatchdogMs = 20_000;
+    // How long the start waits for Windows' crash record about the
+    // previous run before deciding without it (it answers in tens of
+    // milliseconds and has had the whole start so far to do so).
+    private const int CrashRecordWaitMs = 1500;
 
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -150,7 +154,10 @@ internal static class Program
         // From here on, a start that dies before the page connects leaves
         // the sentinel behind for the next start to report (BootSentinel).
         var unfinished = BootSentinel.Arm(version);
-        if (unfinished != null) CrashRecord.CollectInBackground(unfinished);
+        // Did that run crash, or was it ended from outside? Windows' crash
+        // record knows; it is asked now and read further down, where it
+        // decides whether captions may auto-start (CrashRecord).
+        var crashRecord = unfinished != null ? CrashRecord.FindAsync(unfinished) : null;
         // Gate on THIS run's extraction succeeding, not on index.html
         // existing — a leftover from a previous version would otherwise
         // mask a failure and silently run a stale UI against a new backend.
@@ -279,14 +286,35 @@ internal static class Program
             BootLog.Append("update: " + updated);
             SendToUi("toast", new { ok = true, msg = "Chatterbox " + updated });
         }
-        if (unfinished != null)
-            BootLog.Append($"previous run ({unfinished.Version} started {unfinished.StartedAt:HH:mm:ss}, pid {unfinished.Pid}) " +
-                           $"{unfinished.How} — crashed or was killed" +
-                           (unfinished.WantsSafeBoot ? ". SAFE BOOT: captions won't auto-start until Start is pressed" : "") +
-                           "; the Windows crash record goes to error.log");
+        string? safeBootReason = null;
+        if (unfinished != null && crashRecord != null)
+        {
+            // The record was asked for when the sentinel was read, so it
+            // has normally long answered (tens of milliseconds). One that
+            // has not counts as "no crash" for this start and is still
+            // written out when it arrives.
+            CrashRecord.Finding? finding = null;
+            try { if (crashRecord.Wait(CrashRecordWaitMs)) finding = crashRecord.Result; } catch { }
+            bool safeBoot = unfinished.WantsSafeBoot(finding?.Crashed);
+            if (safeBoot) safeBootReason = unfinished.How;
+            BootLog.Append(CrashRecord.Describe(unfinished, finding, safeBoot));
+            if (finding != null) CrashRecord.Report(unfinished, finding);
+            else
+                crashRecord.ContinueWith(late =>
+                {
+                    if (late.Status != TaskStatus.RanToCompletion) return;
+                    CrashRecord.Report(unfinished, late.Result);
+                    BootLog.Append("previous run: Windows' crash record answered late — " + (late.Result.Crashed switch
+                    {
+                        true => "it recorded a crash or hang (copied to error.log)",
+                        false => "no crash was recorded",
+                        null => $"it could not be read ({late.Result.Problem})",
+                    }));
+                }, TaskScheduler.Default);
+        }
         SttSettings.MarkHasRun(version);
         ctrl.EnsureVoiceDetectorAtBoot();
-        ctrl.ArmBootReconcile(safeBootReason: unfinished is { WantsSafeBoot: true } ? unfinished.How : null);
+        ctrl.ArmBootReconcile(safeBootReason);
         ctrl.RestartRequested += RestartApp;
 
         // A page that never connects means a blank window (WebView2

@@ -41,8 +41,27 @@ public class BootSentinelTests : IDisposable
         Assert.NotNull(previous);
         Assert.Equal(BootSentinel.PhaseCaptions, previous!.Phase);
         Assert.Equal("ended while captions were running", previous.How);
-        Assert.True(previous.WantsSafeBoot);
         Assert.Equal(Environment.ProcessId, previous.Pid);
+        // A crash during captions holds the next start's captions back...
+        Assert.True(previous.WantsSafeBoot(crashRecorded: true));
+    }
+
+    [Fact]
+    public void BeingEndedFromOutsideDuringCaptionsIsNotACrash()
+    {
+        // The everyday end on a machine where a companion app starts
+        // Chatterbox with the game: TerminateProcess when the game closes,
+        // captions still running. Windows records no crash for that, and
+        // the next launch must auto-start as usual.
+        BootSentinel.Arm("1.7.2");
+        BootSentinel.Mark(BootSentinel.PhaseWindow);
+        BootSentinel.Mark(BootSentinel.PhaseCaptions);
+        BootSentinel.ResetForTests();
+        var previous = BootSentinel.Arm("1.7.2");
+        Assert.Equal(BootSentinel.PhaseCaptions, previous!.Phase);
+        Assert.False(previous.WantsSafeBoot(crashRecorded: false));
+        // No answer from the record is not evidence of a crash either.
+        Assert.False(previous.WantsSafeBoot(crashRecorded: null));
     }
 
     [Fact]
@@ -53,8 +72,12 @@ public class BootSentinelTests : IDisposable
         BootSentinel.ResetForTests();
         var previous = BootSentinel.Arm("1.7.2");
         Assert.Equal(BootSentinel.PhaseWindow, previous!.Phase);
-        Assert.False(previous.WantsSafeBoot);
+        Assert.False(previous.WantsSafeBoot(crashRecorded: false));
+        Assert.False(previous.WantsSafeBoot(crashRecorded: null));
         Assert.Contains("idle", previous.How);
+        // A recorded crash is another matter: the engine an auto-start
+        // loads is loaded while the marker still says "window".
+        Assert.True(previous.WantsSafeBoot(crashRecorded: true));
     }
 
     [Fact]
@@ -65,7 +88,10 @@ public class BootSentinelTests : IDisposable
         var previous = BootSentinel.Arm("1.7.2");
         Assert.Equal(BootSentinel.PhaseBoot, previous!.Phase);
         Assert.Equal("never reached the window", previous.How);
-        Assert.True(previous.WantsSafeBoot);
+        // With or without a crash record, as since 1.3.0.
+        Assert.True(previous.WantsSafeBoot(crashRecorded: true));
+        Assert.True(previous.WantsSafeBoot(crashRecorded: false));
+        Assert.True(previous.WantsSafeBoot(crashRecorded: null));
     }
 
     [Fact]
@@ -153,6 +179,7 @@ public class BootSentinelTests : IDisposable
 public class CrashRecordTests
 {
     private const string Ev = "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>";
+    private const string Exe = "Chatterbox.exe";
 
     private static string Sample(int stackFrames) =>
         Ev + "<System><Provider Name='Application Error'/><EventID>1000</EventID>" +
@@ -172,7 +199,7 @@ public class CrashRecordTests
     [Fact]
     public void KeepsOnlyThisAppsEventsWithoutMachineOrAccountIdentifiers()
     {
-        var events = CrashRecord.FilterXml(Sample(5), "Chatterbox");
+        var events = CrashRecord.Read(Sample(5), Exe).Events;
         Assert.Equal(2, events.Count);
         Assert.Contains("Application Error (1000) at 2026-09-05T05:36:58.4367430Z", events[0]);
         Assert.Contains("AppName: Chatterbox.exe", events[0]);
@@ -189,7 +216,7 @@ public class CrashRecordTests
     [Fact]
     public void TrimsALongStackToTheFirstFrames()
     {
-        var events = CrashRecord.FilterXml(Sample(60), "Chatterbox", maxLinesPerEvent: 20);
+        var events = CrashRecord.Read(Sample(60), Exe, maxLinesPerEvent: 20).Events;
         var runtime = events[1];
         Assert.Contains("at Frame0()", runtime);
         Assert.DoesNotContain("at Frame40()", runtime);
@@ -199,10 +226,180 @@ public class CrashRecordTests
     [Fact]
     public void EmptyOrUnreadableOutputIsHandled()
     {
-        Assert.Empty(CrashRecord.FilterXml("", "Chatterbox"));
-        Assert.Empty(CrashRecord.FilterXml(Ev + "<System/><EventData><Data Name='AppName'>Other.exe</Data></EventData></Event>", "Chatterbox"));
-        var broken = CrashRecord.FilterXml("<Event><unclosed>", "Chatterbox");
-        Assert.Single(broken);
-        Assert.Contains("unreadable", broken[0]);
+        Assert.Empty(CrashRecord.Read("", Exe).Events);
+        Assert.Empty(CrashRecord.Read(Ev + "<System/><EventData><Data Name='AppName'>Other.exe</Data></EventData></Event>", Exe).Events);
+        var broken = CrashRecord.Read("<Event><unclosed>", Exe);
+        Assert.Empty(broken.Events);
+        Assert.Contains("unreadable", broken.Problem);
+    }
+
+    [Fact]
+    public void AnotherProgramsCrashThatMentionsThisAppIsNotOurs()
+    {
+        // A build tool that crashed in a folder named after the app, and a
+        // test host whose stack runs through the app's code: both name it,
+        // neither is it.
+        string others =
+            Ev + "<System><Provider Name='Application Error'/><EventID>1000</EventID>" +
+            "<TimeCreated SystemTime='2026-09-05T05:36:58.0000000Z'/></System><EventData>" +
+            "<Data Name='AppName'>dotnet.exe</Data>" +
+            @"<Data Name='AppPath'>C:\Projects\Chatterbox\tools\dotnet.exe</Data></EventData></Event>" +
+            Ev + "<System><Provider Name='.NET Runtime'/><EventID>1026</EventID>" +
+            "<TimeCreated SystemTime='2026-09-05T05:36:58.0000000Z'/></System><EventData>" +
+            "<Data>Application: testhost.exe\nStack:\n   at Chatterbox.Program.Main()\n   in Chatterbox.exe\n</Data></EventData></Event>";
+        var finding = CrashRecord.Read(others, Exe);
+        Assert.Empty(finding.Events);
+        Assert.False(finding.Crashed);
+        // The update's helper runs as the staged copy of the app: that is it.
+        string helper =
+            Ev + "<System><Provider Name='Application Error'/><EventID>1000</EventID>" +
+            "<TimeCreated SystemTime='2026-09-05T05:36:58.0000000Z'/></System><EventData>" +
+            "<Data Name='AppName'>Chatterbox.exe.new</Data></EventData></Event>";
+        Assert.True(CrashRecord.Read(helper, Exe).Crashed);
+        // An entry without field names puts the program first.
+        string unnamed =
+            Ev + "<System><Provider Name='Application Error'/><EventID>1000</EventID>" +
+            "<TimeCreated SystemTime='2026-09-05T05:36:58.0000000Z'/></System><EventData>" +
+            "<Data>chatterbox.exe</Data><Data>1.2.4.0</Data><Data>c0000005</Data></EventData></Event>";
+        Assert.True(CrashRecord.Read(unnamed, Exe).Crashed);
+    }
+
+    [Fact]
+    public void ACrashFromBeforeTheRunStartedBelongsToAnEarlierRun()
+    {
+        // The sample's entries are stamped 05:36:58.227 and 05:36:58.436 UTC.
+        static DateTime Utc(int minute, int second, int ms = 0) => new(2026, 9, 5, 5, minute, second, ms, DateTimeKind.Utc);
+        // A run that started after them did not cause them: it was ended
+        // from outside, however recently the app had crashed before.
+        var later = CrashRecord.Read(Sample(3), Exe, Utc(36, 59));
+        Assert.Empty(later.Events);
+        Assert.False(later.Crashed);
+        // A run that started before them did.
+        var earlier = CrashRecord.Read(Sample(3), Exe, Utc(30, 0));
+        Assert.Equal(2, earlier.Events.Count);
+        Assert.True(earlier.Crashed);
+        // The cut is exact, entry by entry.
+        var between = CrashRecord.Read(Sample(3), Exe, Utc(36, 58, 300));
+        Assert.Single(between.Events);
+        Assert.Contains("Application Error (1000)", between.Events[0]);
+        // An entry whose time cannot be read is kept rather than dropped.
+        string undated = Ev + "<System><Provider Name='Application Error'/><EventID>1000</EventID></System>" +
+                         "<EventData><Data Name='AppName'>Chatterbox.exe</Data></EventData></Event>";
+        Assert.True(CrashRecord.Read(undated, Exe, Utc(36, 59)).Crashed);
+    }
+
+    [Fact]
+    public void AWindowThatStoppedRespondingAndWasClosedCountsLikeACrash()
+    {
+        string hang =
+            Ev + "<System><Provider Name='Application Hang'/><EventID>1002</EventID>" +
+            "<TimeCreated SystemTime='2026-09-05T05:36:58.0000000Z'/><Computer>BOX</Computer></System><EventData>" +
+            "<Data Name='AppName'>Chatterbox.exe</Data><Data Name='AppVersion'>1.7.2.0</Data>" +
+            "<Data Name='HangType'>Top level window is idle</Data></EventData></Event>";
+        var finding = CrashRecord.Read(hang, Exe);
+        Assert.True(finding.Crashed);
+        Assert.Contains("Application Hang (1002)", finding.Events[0]);
+        Assert.Contains("HangType: Top level window is idle", finding.Events[0]);
+        Assert.True(Run(BootSentinel.PhaseCaptions).WantsSafeBoot(finding.Crashed));
+    }
+
+    // ── crash, or ended from outside? ──
+
+    private static BootSentinel.Unfinished Run(string phase) =>
+        new("1.7.2", new DateTime(2026, 10, 9, 21, 31, 4), 4242, phase);
+
+    [Fact]
+    public void TheRecordSaysCrashNoCrashOrNothing()
+    {
+        Assert.True(CrashRecord.Read(Sample(3), Exe).Crashed);
+        // Windows recorded nothing, or only other apps' crashes: no crash.
+        Assert.False(CrashRecord.Read("", Exe).Crashed);
+        Assert.False(CrashRecord.Read(Ev + "<System/><EventData><Data Name='AppName'>Other.exe</Data></EventData></Event>", Exe).Crashed);
+        // Output that cannot be parsed is no answer — not a crash, and it
+        // says why.
+        var broken = CrashRecord.Read("<Event><unclosed>", Exe);
+        Assert.Null(broken.Crashed);
+        Assert.False(broken.Readable);
+        Assert.Empty(broken.Events);
+        Assert.Contains("unreadable", broken.Problem);
+        // So is a record that could not be asked at all.
+        var failed = new CrashRecord.Finding(Array.Empty<string>(), "wevtutil failed with code 5: Access is denied.");
+        Assert.Null(failed.Crashed);
+    }
+
+    [Fact]
+    public void ARunEndedFromOutsideBootsNormallyAndStaysOutOfTheErrorLog()
+    {
+        // What a companion app's TerminateProcess leaves behind: the marker
+        // in the captions phase and nothing in the Application log.
+        var previous = Run(BootSentinel.PhaseCaptions);
+        var finding = CrashRecord.Read("", Exe);
+        bool safeBoot = previous.WantsSafeBoot(finding.Crashed);
+        Assert.False(safeBoot);
+        Assert.Null(CrashRecord.Note(previous, finding));
+        var line = CrashRecord.Describe(previous, finding, safeBoot);
+        Assert.StartsWith("previous run (1.7.2 started 21:31:04, pid 4242) ended while captions were running", line);
+        Assert.Contains("ended from outside", line);
+        Assert.Contains("captions auto-start as usual", line);
+        Assert.DoesNotContain("SAFE BOOT", line);
+        // The same while idle.
+        var idle = Run(BootSentinel.PhaseWindow);
+        Assert.Null(CrashRecord.Note(idle, finding));
+        Assert.DoesNotContain("SAFE BOOT", CrashRecord.Describe(idle, finding, idle.WantsSafeBoot(finding.Crashed)));
+    }
+
+    [Fact]
+    public void ARecordedCrashIsASafeBootWithItsRecordInTheErrorLog()
+    {
+        foreach (var phase in new[] { BootSentinel.PhaseCaptions, BootSentinel.PhaseWindow, BootSentinel.PhaseBoot })
+        {
+            var previous = Run(phase);
+            var finding = CrashRecord.Read(Sample(3), Exe);
+            bool safeBoot = previous.WantsSafeBoot(finding.Crashed);
+            Assert.True(safeBoot, phase);
+            var note = CrashRecord.Note(previous, finding);
+            Assert.NotNull(note);
+            Assert.Contains("Windows crash record:", note);
+            Assert.Contains("ExceptionCode: c0000005", note);
+            var line = CrashRecord.Describe(previous, finding, safeBoot);
+            Assert.Contains("Windows recorded a crash", line);
+            Assert.Contains("SAFE BOOT", line);
+        }
+    }
+
+    [Fact]
+    public void AStartThatNeverReachedTheWindowIsNotedEvenWithoutARecord()
+    {
+        var previous = Run(BootSentinel.PhaseBoot);
+        var finding = CrashRecord.Read("", Exe);
+        Assert.True(previous.WantsSafeBoot(finding.Crashed));
+        Assert.Contains("no Windows crash record found", CrashRecord.Note(previous, finding));
+        var line = CrashRecord.Describe(previous, finding, safeBoot: true);
+        Assert.Contains("previous run (", line);
+        Assert.Contains("never reached the window", line);
+        Assert.Contains("SAFE BOOT", line);
+    }
+
+    [Fact]
+    public void ARecordThatGivesNoAnswerNeverHoldsARunningAppBack()
+    {
+        var previous = Run(BootSentinel.PhaseCaptions);
+        // Not answered in time: decided without it, and said so.
+        Assert.False(previous.WantsSafeBoot(null));
+        Assert.Contains("did not answer in time", CrashRecord.Describe(previous, null, safeBoot: false));
+        // Answered, but unreadable: no safe boot, the boot log says why,
+        // and error.log is left alone — a machine whose record can never
+        // be read would otherwise get a note at every start after a kill.
+        var broken = CrashRecord.Read("<Event><unclosed>", Exe);
+        Assert.False(previous.WantsSafeBoot(broken.Crashed));
+        var line = CrashRecord.Describe(previous, broken, safeBoot: false);
+        Assert.Contains("could not be read (unreadable output:", line);
+        Assert.Contains("captions auto-start as usual", line);
+        Assert.Null(CrashRecord.Note(previous, broken));
+        // A start that never reached the window is noted there as ever,
+        // with the reason in place of the record.
+        var boot = Run(BootSentinel.PhaseBoot);
+        Assert.True(boot.WantsSafeBoot(broken.Crashed));
+        Assert.Contains("could not be read (unreadable output:", CrashRecord.Note(boot, broken));
     }
 }

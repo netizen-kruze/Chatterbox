@@ -225,11 +225,15 @@ never transmitted anywhere, and so is its translation.
   (passes, average and worst pass time, worst lag) for bug reports.
 - **Chatterbox crashed or vanished**: the next start notices (the
   `boot.inprogress` marker survived, and says whether the run died while
-  starting, idle, or with captions running), copies Windows' crash record
-  into `error.log`, and — unless the window was merely idle when it was
-  ended — runs a safe boot: captions are not auto-started until you press
-  Start once, so a crash can never loop. Signing out or shutting down
-  with Chatterbox in the tray counts as a clean exit.
+  starting, idle, or with captions running) and asks Windows whether it
+  recorded a crash for that run. A recorded crash is copied into
+  `error.log` and that start is a safe boot: captions are not auto-started
+  until you press Start once, so a crash can never loop. A start that
+  never reached the window is treated the same way. A run that was simply
+  ended from outside — Task Manager, or a companion app that starts and
+  stops Chatterbox with the game — is not a crash: `last_boot.log` notes
+  it in one line and captions auto-start as usual. Signing out or
+  shutting down with Chatterbox in the tray counts as a clean exit.
 - **The Vulkan translation pack is installed but translation runs on the
   CPU**: the Translate banner, a toast at Start and the `translation:`
   line in `last_boot.log` say why. The translation runtime finds a Vulkan
@@ -300,8 +304,11 @@ what it ran on.
   build's audit: a CPU without AVX2/FMA gets the bundled no-AVX Whisper
   build, so both engines run there (the voice detector loads through it
   too); the crash marker now covers the whole run, so a crash during
-  captions is recorded and the next start does not walk back into it
-  (sign-out and shutdown count as clean exits); the Translate tab says
+  captions is recorded and the next start does not walk back into it —
+  Windows' own crash record tells a crash from being ended from outside,
+  so a companion app that stops Chatterbox when the game closes never
+  costs the next launch its auto-start (sign-out and shutdown count as
+  clean exits); the Translate tab says
   when translation runs on the CPU although the Vulkan pack is installed,
   and why; the microphone is chosen by the name you see, so a list that
   went stale after a USB unplug cannot pick another device; the Parakeet

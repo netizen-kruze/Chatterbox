@@ -109,14 +109,29 @@ away (restore after this section).
       the "previous run … never reached the window" line and `error.log` a
       "PreviousStart" entry (with Windows' crash record when one exists).
       The launch after that is normal again.
-- [ ] **Crash during captions**: Start captions, then end Chatterbox.exe
-      in Task Manager (End task) → the next launch shows a red toast "The
-      last run of Chatterbox ended while captions were running …",
-      captions do NOT auto-start, and `last_boot.log` has "SAFE BOOT". The
-      same with the window idle (no captions) → `last_boot.log` and
-      `error.log` note the run "ended without a clean exit while idle",
-      but there is no safe boot. While Chatterbox runs, `boot.inprogress`
+- [ ] **Ended from outside during captions is not a crash** (what a
+      companion app does at every game exit): Start captions, then end
+      Chatterbox.exe in Task Manager (End task) or with
+      `taskkill /F /IM Chatterbox.exe` → the next launch has NO
+      red toast, captions auto-start as usual, `last_boot.log` says
+      "previous run … ended while captions were running — Windows recorded
+      no crash, so it was ended from outside … captions auto-start as
+      usual", and nothing is added to `error.log`. The same with the
+      window idle → "ended without a clean exit while idle", no safe boot,
+      nothing in `error.log`. While Chatterbox runs, `boot.inprogress`
       ends in `|window`, or `|captions` during a session.
+- [ ] **A real crash** (no by-hand trigger in the app — the
+      CrashRecordTests cover the decision; if it ever happens live):
+      Windows' Application log holds an "Application Error", ".NET
+      Runtime" or "Application Hang" event filed under Chatterbox.exe and
+      stamped after that run started, the next launch shows the red toast
+      "The last run of Chatterbox ended while captions were running …",
+      captions do NOT auto-start, `last_boot.log` has "Windows recorded a
+      crash or hang for it" and "SAFE BOOT", and `error.log` carries the
+      record. An older event, or another program's crash that merely
+      mentions Chatterbox, does not count. (To stage one: any exe named
+      Chatterbox.exe that dies of an unhandled exception leaves such an
+      event; write a `boot.inprogress` that started before it.)
 - [ ] **Sign-out / shutdown counts as a clean exit**: with Chatterbox in
       the tray, sign out of Windows and back in → the next launch has no
       "previous run" line in `last_boot.log`, no red toast, and the old
