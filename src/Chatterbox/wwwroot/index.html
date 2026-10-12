@@ -142,7 +142,18 @@
   <section class="view" id="view-settings">
     <div class="panel">
       <h2>Settings</h2>
+      <div class="group" id="updGroup">
+        <h3>Updates</h3>
+        <div class="setrow"><span class="grow"><span class="name">Check for updates <span class="fixed-note" id="updCurrent"></span></span><div class="desc" id="updDesc">Looks up the latest release on GitHub. One small request; nothing about you is sent.</div>
+          <div class="updnotes" id="updNotes" hidden></div>
+          <div class="progress updprog" id="updProg" hidden><i id="updBar" style="width:0%"></i></div></span>
+          <button class="chipbtn amber" id="btnUpdInstall" hidden>Update now</button>
+          <button class="chipbtn" id="btnUpdCheck">Check for updates</button></div>
+        <div class="setrow last"><span class="grow"><span class="name">Check when Chatterbox starts</span><div class="desc">Tells you at startup when a newer version exists — nothing installs by itself. Off: Chatterbox never contacts GitHub unless you press Check.</div></span>
+          <span class="toggle" id="tglUpdAuto" role="switch" aria-checked="false" tabindex="0"><i></i><b></b></span></div>
+      </div>
       <div class="group">
+        <h3>Captions</h3>
         <div class="setrow"><span class="grow"><span class="name">Recommended defaults</span><div class="desc">Sets everything below to the best choice for this machine: the strongest engine your hardware runs fast, a 1.0 s update rate, and the standard pause behavior. Your microphone and auto-start players are untouched.</div></span>
           <button class="chipbtn amber" id="btnDefaults">Apply Recommended Default Settings</button></div>
         <div class="setrow"><span class="grow"><span class="name">Chatbox update rate</span><div class="desc">How often new words reach the in-game window. 1.0 s is the floor — faster gets rate-limited by VRChat.</div></span>
@@ -161,16 +172,6 @@
         <div class="setrow last"><span class="grow"><span class="name">How fast is recognition on this PC?</span><div class="desc">Times every installed engine on a bundled 14-second clip and rates each for live captioning. Takes under a minute; captions must be stopped. The result is also written to bench.log for bug reports.</div>
           <div class="bench" id="benchOut" hidden></div></span>
           <button class="chipbtn amber" id="btnBench">Run speed check</button></div>
-      </div>
-      <div class="group" id="updGroup">
-        <h3>Updates</h3>
-        <div class="setrow"><span class="grow"><span class="name">Check for updates <span class="fixed-note" id="updCurrent"></span></span><div class="desc" id="updDesc">Looks up the latest release on GitHub. One small request; nothing about you is sent.</div>
-          <div class="updnotes" id="updNotes" hidden></div>
-          <div class="progress updprog" id="updProg" hidden><i id="updBar" style="width:0%"></i></div></span>
-          <button class="chipbtn amber" id="btnUpdInstall" hidden>Update now</button>
-          <button class="chipbtn" id="btnUpdCheck">Check for updates</button></div>
-        <div class="setrow last"><span class="grow"><span class="name">Check when Chatterbox starts</span><div class="desc">Tells you at startup when a newer version exists — nothing installs by itself. Off: Chatterbox never contacts GitHub unless you press Check.</div></span>
-          <span class="toggle" id="tglUpdAuto" role="switch" aria-checked="false" tabindex="0"><i></i><b></b></span></div>
       </div>
       <div class="group">
         <h3>About</h3>

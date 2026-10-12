@@ -284,6 +284,12 @@ away (restore after this section).
       "no update source configured" line and never goes online. "Check
       when Chatterbox starts" persists (`CheckUpdatesAtStartup` in
       stt_settings.json) and is on by default.
+- [ ] Updates opens the Settings tab (1.7.3+): at the smallest window size
+      Check for updates, the release notes and Update now are all in view
+      without scrolling, and the caption settings follow under a
+      "Captions" heading. Scroll Settings to the bottom, go to another
+      tab, then press **Open Updates** on the startup "… is available"
+      notice → Settings opens at its very top, title included.
 - [ ] Update flow, offline-safe: serve a fake release with
       `python -m http.server` — a `latest.json` in GitHub's release shape
       (tag `vX.Y.Z` above the build, an asset named

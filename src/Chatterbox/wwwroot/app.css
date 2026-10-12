@@ -192,6 +192,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,.toggle:focus-visi
   max-height:160px;overflow-y:auto;max-width:60ch;user-select:text}
 .updnotes[hidden],.updprog[hidden]{display:none}
 .updprog{margin-top:9px;max-width:52ch}
+#updGroup{scroll-margin-top:80px} /* first on the tab: "Open Updates" lands at the very top, the Settings title in view */
 .tag-exp{font:600 9px 'IBM Plex Sans';letter-spacing:.07em;text-transform:uppercase;color:var(--amber);border:1px solid var(--amber-deep);border-radius:4px;padding:1.5px 6px;margin-left:7px;vertical-align:1px}
 .seg{display:flex;background:var(--bg-raised);border:1px solid var(--brd);border-radius:8px;overflow:hidden;flex-shrink:0}
 .seg button{font:500 12.5px 'IBM Plex Sans';color:var(--tx2);border:0;background:none;padding:7.5px 15px;cursor:pointer}

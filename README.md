@@ -139,7 +139,8 @@ was also accurate. The picker lists the languages it does best.
 
 ## Updates
 
-**Settings → Updates → Check for updates** asks the project's GitHub
+**Settings → Updates → Check for updates** (the first section on the
+Settings tab) asks the project's GitHub
 Releases page for a newer version and installs it in place: the zip is
 downloaded, checked against the SHA-256 published with the release, and
 the new exe is put beside the running one; Chatterbox then exits, the new
@@ -284,6 +285,11 @@ what it ran on.
 
 ## What's new
 
+- **1.7.3** — **Updates is the first thing on the Settings tab.** Check for
+  updates and its Update now button used to sit below the caption settings
+  and the speed check, a scroll away. The section now opens the tab, the
+  caption settings follow under their own heading, and the startup
+  notice's **Open Updates** button lands at the top of the tab.
 - **1.7.2** — **the exe is never changed under a running process.** A
   single-file .NET exe reads every assembly it has not used yet from its
   own file, so the in-app update, which renamed the running exe aside and
