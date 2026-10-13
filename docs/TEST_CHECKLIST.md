@@ -18,7 +18,8 @@ away (restore after this section).
       progress bar; when done, the captions screen replaces first-run and
       Start enables (engine set to Whisper automatically). Total ≈33 MB.
 - [ ] **Best quality is GPU-aware**: on this machine (NVIDIA) the card
-      offers Whisper turbo-q5 + the CUDA pack (~718 MB) and sets the
+      offers Whisper turbo-q5 + the CUDA pack (about 1.1 GB; ~718 MB when the
+      CUDA Toolkit 13 is installed) and sets the
       Whisper engine; captions run (CPU) as soon as the model lands, full
       speed after a restart. On a non-NVIDIA machine it offers Parakeet.
 - [ ] Models screen: hardware banner shows your tier + recommendation;
@@ -29,6 +30,26 @@ away (restore after this section).
       test (optional): append a byte to a model file → Verify names it.
 - [ ] GPU pack (NVIDIA): download completes, toast says restart to
       activate; after restart, Whisper status chip shows `Cuda`.
+- [ ] GPU pack on a PC WITHOUT the CUDA Toolkit (1.7.3+; simulate by
+      starting the app with the toolkit's folders removed from PATH): the
+      row's size is about 545 MB, the download fetches three parts with
+      one progress bar, and `runtimes\cuda\win-x64` then holds
+      `cudart64_13.dll`, `cublas64_13.dll`, `cublasLt64_13.dll` and
+      `NVIDIA-CUDA-LICENSE.txt` beside the five whisper DLLs. After a
+      restart `last_boot.log` says "cuda: pack installed; runtime: bundled
+      CUDA 13 runtime loaded" and the chip shows `Cuda`.
+- [ ] A pack from 1.7.2 or older without the runtime (the five whisper
+      DLLs only, no toolkit on PATH): the row says Download (about
+      403 MB), Start on Whisper toasts "GPU acceleration is missing
+      NVIDIA's CUDA runtime — download it on the Models screen" (never
+      "restart"), and the boot log says "runtime: CUDA 13 runtime
+      missing". Download + restart → `Cuda`.
+- [ ] With the CUDA Toolkit 13 on PATH and no bundled runtime: the row is
+      Installed at 143 MB and the boot log says "system CUDA 13 runtime
+      loaded (<folder>)".
+- [ ] Delete the GPU pack while it is loaded: the row returns to Download
+      at once, the toast says files in use are cleared at the next start,
+      and after a restart the folder holds no `.delete` files.
 - [ ] Models → **In use** (moved from Settings in 1.7.0): the engine switch
       and the Whisper model picker change the Active badge below and
       persist across a restart.

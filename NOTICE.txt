@@ -22,7 +22,12 @@ Models (downloaded at runtime, never bundled)
   License: https://creativecommons.org/licenses/by/4.0/
 - Silero VAD — MIT (snakers4/silero-vad; ggml conversion by ggml-org)
 - Whisper CUDA acceleration pack — MIT (whisper.cpp CUDA build, packaged
-  by Whisper.net)
+  by Whisper.net). The pack also downloads NVIDIA's CUDA 13 runtime and
+  cuBLAS libraries (cudart64_13.dll, cublas64_13.dll, cublasLt64_13.dll)
+  from developer.download.nvidia.com; they are NVIDIA's, licensed under
+  the NVIDIA CUDA Toolkit End User License Agreement, whose text is saved
+  beside them as NVIDIA-CUDA-LICENSE.txt. They are not part of this app's
+  release files.
 - Tencent Hy-MT2 1.8B translation model — Apache-2.0 (Tencent Hunyuan; GGUF
   by Tencent). License: https://www.apache.org/licenses/LICENSE-2.0
 - Translation runtime packs (llama.cpp CPU and Vulkan builds, packaged by

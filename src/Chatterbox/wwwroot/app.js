@@ -439,7 +439,12 @@ const isGpuTier = () => mods?.tier === 'Gpu';
 function updateFirstRunCards() {
   if (isGpuTier()) {
     $('chBestDesc').textContent = 'Whisper large-v3-turbo + GPU acceleration for your NVIDIA card — the most accurate live setup.';
-    $('chBestSize').textContent = '~718 MB download · full speed after one restart';
+    // The GPU pack's size depends on the PC: it brings NVIDIA's CUDA runtime
+    // (~400 MB) unless the CUDA Toolkit already provides one.
+    const need = ['vad', 'large-v3-turbo-q5', 'cuda-gpu-pack']
+      .map(id => (mods?.models || []).find(m => m.id === id))
+      .filter(m => m && !m.installed).reduce((sum, m) => sum + m.sizeBytes, 0);
+    $('chBestSize').textContent = `~${MB(need || 1.12e9)} download · full speed after one restart`;
   } else {
     $('chBestDesc').textContent = 'NVIDIA Parakeet — leads the open accuracy leaderboard, runs fast on your CPU.';
     $('chBestSize').textContent = '~670 MB download';

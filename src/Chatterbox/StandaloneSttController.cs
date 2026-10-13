@@ -1173,7 +1173,7 @@ public sealed class StandaloneSttController : IDisposable
                             }, gpuCt);
                             ReleaseDownload(id);
                             _send("toast", ok
-                                ? new { ok = true, msg = "GPU acceleration installed — restart Chatterbox to activate it" }
+                                ? new { ok = SttGpuPack.CudaRuntimePresent(), msg = "GPU acceleration installed — restart Chatterbox to activate it" + SttGpuPack.RuntimeNote() }
                                 : new { ok = false, msg = error ?? "download failed" });
                             SendModels();
                         });
@@ -1243,8 +1243,10 @@ public sealed class StandaloneSttController : IDisposable
                     }
                     else if (id == SttGpuPack.Id)
                     {
-                        SttGpuPack.Delete();
-                        _send("toast", new { ok = true, msg = "GPU acceleration removed — takes effect after restarting Chatterbox" });
+                        bool gone = SttGpuPack.Delete();
+                        _send("toast", new { ok = true, msg = gone
+                            ? "GPU acceleration removed — takes effect after restarting Chatterbox"
+                            : "GPU acceleration removed — files in use are cleared the next time Chatterbox starts" });
                     }
                     else if (SttTranslatePacks.Find(id) is { } pack)
                     {
@@ -1810,7 +1812,25 @@ public sealed class StandaloneSttController : IDisposable
 
         string msg;
         object action;
-        if (onCpu && nvidia && SttGpuPack.IsInstalled())
+        if (onCpu && nvidia && SttGpuPack.WhisperInstalled() && !SttGpuPack.CudaRuntimePresent())
+        {
+            // The natives are there but no CUDA runtime is (an install from
+            // before the runtime became part of the pack): a restart would
+            // change nothing, so send them to the download that fetches it.
+            msg = head + "GPU acceleration is missing NVIDIA's CUDA runtime — download it on the Models screen " +
+                  $"(about {SttGpuPack.SizeBytes / 1_000_000} MB), then restart.";
+            action = new { label = "Open Models", view = "models" };
+        }
+        else if (onCpu && nvidia && SttGpuPack.IsInstalled() && SttGpuPack.ArmedAtStartup)
+        {
+            // The pack was there when this process started and whisper.cpp
+            // still chose the CPU: another restart changes nothing — the
+            // loader's own words are in the logs.
+            msg = head + "GPU acceleration is installed but Whisper still ran on the CPU — updating the NVIDIA graphics driver usually fixes that. " +
+                  "The 'whisper.net loader:' lines in " + Path.Combine(SttPaths.DataDir, "last_boot.log") + " say why.";
+            action = new { };
+        }
+        else if (onCpu && nvidia && SttGpuPack.IsInstalled())
         {
             msg = head + "GPU acceleration is installed but not active yet — Chatterbox has to restart to load it.";
             action = new { label = "Restart Chatterbox", send = new { action = "sttRestartApp" } };

@@ -190,6 +190,10 @@ internal static class Program
                 "not Program Files) and start it again. Captions can't run until then.",
                 "Chatterbox", 0x00000030u);
         }
+        // The GPU pack's CUDA runtime must be in the process before
+        // Whisper.net first looks for it (see SttGpuPack.PreloadRuntime).
+        SttGpuPack.PreloadRuntime();
+        HookWhisperLoaderLog();
         // The translation runtime's loader says which build it picked
         // (vulkan or a CPU variant) — the only truthful source for the
         // "runs on your GPU" claim.
@@ -277,6 +281,7 @@ internal static class Program
         // spawn) — that state change fires no event, so seed it here.
         if (watcher.GameRunning) sawGame = true;
         BootLog.Write(version, args, ctrl.Settings, watcher.GameRunning, watcher.DescribeLog(), MachineProfile.Describe());
+        BootLog.Append("cuda: " + SttGpuPack.Status());
         // An update the previous start installed: clear its leftovers and
         // say so (the toast waits for the page like everything else).
         if (AppUpdater.LatestReleaseUrlOverride is { } updateSource)
@@ -558,6 +563,37 @@ internal static class Program
     // Parakeet. Always overwritten (~2 MB each): an exe-swap update must
     // never leave a stale native behind, and same-size version collisions
     // are realistic with alignment-padded PE files.
+    // Whisper.net narrates how it picked a native runtime ("Couldn't load
+    // dependency …") and whisper.cpp says what it found ("ggml_cuda_init:
+    // found 1 CUDA devices"): those lines go to the boot log, capped, so
+    // "it doesn't use my GPU" can be read off a bug report.
+    private static IDisposable? _whisperLog;
+    private static int _whisperLogLines;
+    private static void HookWhisperLoaderLog()
+    {
+        if (_whisperLog != null) return;
+        try
+        {
+            _whisperLog = Whisper.net.Logger.LogProvider.AddLogger((_, message) =>
+            {
+                if (message == null) return;
+                var m = message.Trim();
+                // Per-pass chatter (a state is created for every pass) would eat the cap.
+                if (m.Length == 0 || m.StartsWith("Searching for runtime directory", StringComparison.Ordinal) ||
+                    m.StartsWith("Runtime directory for", StringComparison.Ordinal) ||
+                    m.StartsWith("whisper_backend_init_gpu", StringComparison.Ordinal) ||
+                    m.StartsWith("whisper_model_load", StringComparison.Ordinal)) return;
+                if (!(m.Contains("cuda", StringComparison.OrdinalIgnoreCase) ||
+                      m.Contains("Couldn't load", StringComparison.OrdinalIgnoreCase) ||
+                      m.Contains("Loading dependency", StringComparison.Ordinal) ||
+                      m.Contains("not available", StringComparison.OrdinalIgnoreCase))) return;
+                if (Interlocked.Increment(ref _whisperLogLines) > 80) return;
+                BootLog.Append("whisper.net loader: " + m);
+            });
+        }
+        catch (Exception ex) { ErrorLog.WriteEntry("HookWhisperLoaderLog", ex); }
+    }
+
     private static void ExtractWhisperNatives()
     {
         try

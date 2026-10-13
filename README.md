@@ -53,7 +53,8 @@ SmartScreen may warn on first run — choose **More info → Run anyway**.
 2. In VRChat: **Action Menu → Options → OSC → Enabled**.
 3. Run `Chatterbox.exe`. On first launch, pick a model:
    **Quick start** (~33 MB) or **Best quality** (recommended, ~670 MB —
-   ~718 MB on NVIDIA machines, where it includes GPU acceleration).
+   about 1.1 GB on NVIDIA machines, where it includes GPU acceleration
+   and the NVIDIA CUDA runtime that needs).
 4. Press **Start captions** and talk. Your words appear in the app and in
    your VRChat chatbox.
 5. Optional: to caption in another language, open the **Translate** tab —
@@ -88,9 +89,22 @@ auto-start players, captions become fully hands-off. Launched normally
 ## GPU acceleration
 
 Whisper models run dramatically faster on NVIDIA cards: on the **Models**
-screen, download **GPU acceleration for Whisper (CUDA)** (~143 MB) and
-restart the app. Parakeet (the recommended engine) is fast on CPU either
-way.
+screen, download **GPU acceleration for Whisper (CUDA)** and restart the
+app. Parakeet (the recommended engine) is fast on CPU either way.
+
+The pack is everything the card needs apart from its graphics driver:
+whisper.cpp's CUDA build (143 MB) plus NVIDIA's CUDA 13 runtime and cuBLAS
+libraries (about 400 MB more, downloaded straight from NVIDIA and checked
+against pinned SHA-256 hashes; about 690 MB on disk in all). The graphics
+driver does not include those libraries. If the NVIDIA CUDA Toolkit 13 is
+already installed, its copy is used and only the 143 MB are downloaded.
+Keep the graphics driver current — CUDA 13 does not run on old ones.
+
+Up to 1.7.2 the pack was only the first part, so on a PC without the CUDA
+Toolkit it said "installed" while Whisper stayed on the CPU. After
+updating, such a pack shows **Download** again: press it once (about
+400 MB) and restart. `last_boot.log` has a `cuda:` line saying what was
+found and `whisper.net loader:` lines with the loader's own words.
 
 ## Translation
 
@@ -285,7 +299,18 @@ what it ran on.
 
 ## What's new
 
-- **1.7.3** — **Updates is the first thing on the Settings tab.** Check for
+- **1.7.3** — **GPU acceleration brings everything it needs.** The Whisper
+  CUDA build needs NVIDIA's CUDA 13 runtime and cuBLAS libraries, which
+  come with the CUDA Toolkit, not with the graphics driver. The pack did
+  not include them, so on most PCs it showed "installed", Whisper ran on
+  the CPU, and the app kept asking for a restart that changed nothing.
+  The pack now downloads those libraries from NVIDIA as well (about
+  400 MB, verified, skipped when the toolkit is installed) and loads them
+  itself at startup. A pack installed by an earlier version shows
+  **Download** again to fetch the missing part. The notices are truthful
+  now: "restart" only when a restart will help, otherwise what is missing
+  or where the loader's reason is logged. Also **Updates is the first
+  thing on the Settings tab.** Check for
   updates and its Update now button used to sit below the caption settings
   and the speed check, a scroll away. The section now opens the tab, the
   caption settings follow under their own heading, and the startup
