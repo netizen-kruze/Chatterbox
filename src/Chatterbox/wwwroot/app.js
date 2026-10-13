@@ -279,7 +279,7 @@ function resetFirstRunCards() {
 const MB = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
 function renderModels(p) {
   mods = p;
-  $('hwText').textContent = `Your hardware: ${p.tierLabel} — recommended: ${p.recommendedId}`;
+  $('hwText').textContent = `Your hardware: ${p.tierLabel} — recommended: ${p.recommendedId}` + (p.gpuNote ? ` · ${p.gpuNote}` : '');
   updateFirstRunCards();
 
   // first-run queue: when nothing is downloading, kick the next item.

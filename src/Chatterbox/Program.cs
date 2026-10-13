@@ -282,6 +282,7 @@ internal static class Program
         if (watcher.GameRunning) sawGame = true;
         BootLog.Write(version, args, ctrl.Settings, watcher.GameRunning, watcher.DescribeLog(), MachineProfile.Describe());
         BootLog.Append("cuda: " + SttGpuPack.Status());
+        BootLog.Append("vc runtime: " + VcRuntime.Describe());
         // An update the previous start installed: clear its leftovers and
         // say so (the toast waits for the page like everything else).
         if (AppUpdater.LatestReleaseUrlOverride is { } updateSource)

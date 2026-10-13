@@ -22,8 +22,9 @@ Models (downloaded at runtime, never bundled)
   License: https://creativecommons.org/licenses/by/4.0/
 - Silero VAD — MIT (snakers4/silero-vad; ggml conversion by ggml-org)
 - Whisper CUDA acceleration pack — MIT (whisper.cpp CUDA build, packaged
-  by Whisper.net). The pack also downloads NVIDIA's CUDA 13 runtime and
-  cuBLAS libraries (cudart64_13.dll, cublas64_13.dll, cublasLt64_13.dll)
+  by Whisper.net; a CUDA 13 build, or a CUDA 12 build for older cards
+  and drivers). The pack also downloads NVIDIA's matching CUDA runtime
+  and cuBLAS libraries (cudart64, cublas64 and cublasLt64, _13 or _12)
   from developer.download.nvidia.com; they are NVIDIA's, licensed under
   the NVIDIA CUDA Toolkit End User License Agreement, whose text is saved
   beside them as NVIDIA-CUDA-LICENSE.txt. They are not part of this app's

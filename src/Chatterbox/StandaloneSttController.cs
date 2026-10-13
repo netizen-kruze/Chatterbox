@@ -222,6 +222,7 @@ public sealed class StandaloneSttController : IDisposable
         _bootFallback = new System.Threading.Timer(_ => RunBootReconcile("fallback timer"), null, BootFallbackMs, Timeout.Infinite);
     }
     private string? _safeBootReason;
+    private int _vcInstalling;
 
     // The host calls this on the page's first message (window thread).
     public void UiConnected()
@@ -236,6 +237,16 @@ public sealed class StandaloneSttController : IDisposable
         // once the page is up, so the next start finds a real file.
         lock (_settingsLock)
             if (!SttSettings.ProvisionalDefaults && !SttSettings.FileExists) _settings.Save();
+        // Without Microsoft's Visual C++ runtime no speech library loads —
+        // say so before Start fails with a model-load error, and offer the fix.
+        if (VcRuntime.Missing() is { Count: > 0 } vcMissing)
+            _send("toast", new
+            {
+                ok = false,
+                msg = "Captions need Microsoft's Visual C++ runtime, which this PC doesn't have (" + string.Join(", ", vcMissing) +
+                      "). Chatterbox can download Microsoft's installer and run it — Windows will ask for permission.",
+                action = new { label = "Install it", send = new { action = "sttInstallVcRuntime" } },
+            });
         RunBootReconcile("page connected");
         // The optional startup check waits for the boot work (auto-start,
         // the voice detector) to settle first.
@@ -893,8 +904,25 @@ public sealed class StandaloneSttController : IDisposable
                 }
                 break;
 
+            case "sttInstallVcRuntime":
+                if (Interlocked.Exchange(ref _vcInstalling, 1) != 0) break;
+                _send("toast", new { ok = true, msg = "Downloading Microsoft's Visual C++ runtime installer (about 25 MB)…" });
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var (ok, message) = await VcRuntime.InstallAsync();
+                        BootLog.Append("vc runtime install: " + message);
+                        _send("toast", ok && !message.Contains("restart Windows", StringComparison.Ordinal)
+                            ? new { ok, msg = message, action = (object)new { label = "Restart Chatterbox", send = new { action = "sttRestartApp" } } }
+                            : new { ok, msg = message, action = (object)new { } });
+                    }
+                    finally { Interlocked.Exchange(ref _vcInstalling, 0); }
+                });
+                break;
+
             case "sttRestartApp":
-                RestartRequested?.Invoke("to activate GPU acceleration (user's choice)");
+                RestartRequested?.Invoke("the user pressed Restart on a notice");
                 break;
 
             // Settings > Speed check: time every installed engine on the
@@ -1627,6 +1655,7 @@ public sealed class StandaloneSttController : IDisposable
         {
             tier = tier.ToString(),
             tierLabel = SttHardwareTier.Label(tier),
+            gpuNote = SttHardwareTier.GpuNote(),
             recommendedId = RecommendedModelId(),
             downloading = _downloadingId ?? "",
             models = SttModelCatalog.Models.Select(m => new
@@ -1837,7 +1866,8 @@ public sealed class StandaloneSttController : IDisposable
         }
         else if (onCpu && nvidia)
         {
-            msg = head + "Your NVIDIA card can run Whisper many times faster — install GPU acceleration on the Models screen.";
+            msg = head + "Your NVIDIA card can run Whisper many times faster — install GPU acceleration on the Models screen " +
+                  $"(about {SttGpuPack.SizeBytes / 1_000_000} MB).";
             action = new { label = "Open Models", view = "models" };
         }
         else if (whisper && parakeetReady)

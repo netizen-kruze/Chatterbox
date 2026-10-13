@@ -18,7 +18,7 @@ public enum SttTier
 public static class SttHardwareTier
 {
     private static readonly Lazy<SttTier> Detected = new(() =>
-        Classify(HasNvidiaDriver(), Environment.ProcessorCount, TotalRamGB()));
+        Classify(CudaProbe.Preferred != CudaVariant.None, Environment.ProcessorCount, TotalRamGB()));
 
     public static SttTier Detect() => Detected.Value;
 
@@ -50,19 +50,12 @@ public static class SttHardwareTier
         _ => "Minimal",
     };
 
-    // The NVIDIA driver ships nvcuda.dll; its presence is what whisper.cpp's
-    // CUDA runtime needs to even attempt GPU init (which itself falls back to
-    // CPU when no usable device exists).
-    private static bool HasNvidiaDriver()
-    {
-        if (!OperatingSystem.IsWindows()) return false;
-        if (NativeLibrary.TryLoad("nvcuda.dll", out var handle))
-        {
-            NativeLibrary.Free(handle);
-            return true;
-        }
-        return false;
-    }
+    // An NVIDIA card is there but neither CUDA build can run on it (driver
+    // or card too old): the one sentence that says so, "" otherwise.
+    public static string GpuNote() =>
+        CudaProbe.Current.DriverPresent && CudaProbe.Preferred == CudaVariant.None
+            ? "GPU acceleration not offered: " + CudaProbe.Verdict
+            : "";
 
     private static double TotalRamGB() =>
         GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1073741824.0;

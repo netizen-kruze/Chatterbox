@@ -93,12 +93,26 @@ screen, download **GPU acceleration for Whisper (CUDA)** and restart the
 app. Parakeet (the recommended engine) is fast on CPU either way.
 
 The pack is everything the card needs apart from its graphics driver:
-whisper.cpp's CUDA build (143 MB) plus NVIDIA's CUDA 13 runtime and cuBLAS
-libraries (about 400 MB more, downloaded straight from NVIDIA and checked
-against pinned SHA-256 hashes; about 690 MB on disk in all). The graphics
-driver does not include those libraries. If the NVIDIA CUDA Toolkit 13 is
-already installed, its copy is used and only the 143 MB are downloaded.
-Keep the graphics driver current — CUDA 13 does not run on old ones.
+whisper.cpp's CUDA build plus NVIDIA's CUDA runtime and cuBLAS libraries,
+downloaded straight from NuGet and NVIDIA and checked against pinned
+SHA-256 hashes. The graphics driver does not include those libraries. If
+the matching NVIDIA CUDA Toolkit is already installed, its copy is used
+and only the first part is downloaded.
+
+Chatterbox asks the graphics driver which build this PC can run and
+downloads that one (the Models screen shows its size):
+
+| Your PC | Build | Download |
+|---|---|---|
+| GTX 16 / RTX 20 series or newer, driver 580 or newer | CUDA 13 | about 545 MB |
+| GTX 900 / GTX 10 series (CUDA 13 dropped these cards), or a newer card on a driver older than 580 | CUDA 12 | about 800 MB |
+| A driver from before CUDA 12 (before 2023), or a card older than the GTX 900 series | none — the Models screen says why | — |
+
+An installed build that still works is kept: updating the driver later
+does not make you download the other one. `last_boot.log` has a `cuda:`
+line with the card, what the driver supports and the build chosen. To
+force a build, set the environment variable `CHATTERBOX_CUDA_BUILD` to
+`12` or `13` before starting Chatterbox.
 
 Up to 1.7.2 the pack was only the first part, so on a PC without the CUDA
 Toolkit it said "installed" while Whisper stayed on the CPU. After
@@ -260,6 +274,18 @@ never transmitted anywhere, and so is its translation.
 - **An old CPU without AVX2/FMA**: the bundled no-AVX Whisper build is
   used automatically (`last_boot.log`'s "whisper natives" line says so).
   It is slower; Parakeet is the better engine on such a machine.
+- **"Captions need Microsoft's Visual C++ runtime"** at startup: the
+  speech libraries need Microsoft's Visual C++ 2015-2022 runtime, which
+  Windows does not include (most PCs have it from another program). Press
+  **Install it**: Chatterbox downloads Microsoft's installer, runs it only
+  if Microsoft's signature on it is valid, and Windows asks for
+  permission. Or install "Visual C++ Redistributable x64" from Microsoft
+  yourself, then restart Chatterbox.
+- **GPU acceleration is installed but Whisper is on the CPU**: read the
+  `cuda:` and `whisper.net loader:` lines in `last_boot.log`. They name
+  the card, the CUDA level the driver supports, the build chosen and
+  whether its runtime loaded. Updating the NVIDIA graphics driver is the
+  usual fix.
 - Errors are logged to `%APPDATA%\Chatterbox\error.log`.
 
 Don't run Chatterbox's captions at the same time as another chatbox
@@ -299,6 +325,17 @@ what it ran on.
 
 ## What's new
 
+- **1.7.4** — **GPU acceleration for older cards and older drivers, and
+  a check for Microsoft's Visual C++ runtime.** NVIDIA's CUDA 13 does not
+  run on GTX 900 / GTX 10 series cards, nor on a driver older than 580;
+  on those PCs the pack loaded and Whisper still ran on the CPU.
+  Chatterbox now asks the driver what the card and the driver support and
+  downloads the matching build — CUDA 13, or CUDA 12 for older cards and
+  drivers — each with its own NVIDIA runtime; when neither can work the
+  Models screen says what to update. Every speech library also needs
+  Microsoft's Visual C++ runtime, which Windows does not include: when it
+  is missing, Chatterbox says so at startup and can download Microsoft's
+  installer, check its signature and run it.
 - **1.7.3** — **GPU acceleration brings everything it needs.** The Whisper
   CUDA build needs NVIDIA's CUDA 13 runtime and cuBLAS libraries, which
   come with the CUDA Toolkit, not with the graphics driver. The pack did

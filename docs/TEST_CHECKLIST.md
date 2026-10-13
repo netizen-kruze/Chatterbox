@@ -47,6 +47,24 @@ away (restore after this section).
 - [ ] With the CUDA Toolkit 13 on PATH and no bundled runtime: the row is
       Installed at 143 MB and the boot log says "system CUDA 13 runtime
       loaded (<folder>)".
+- [ ] Which build (1.7.4+): the boot log's `cuda:` line names the card,
+      its compute capability, the CUDA level the driver supports and the
+      build chosen. With `CHATTERBOX_CUDA_BUILD=12` set and no CUDA Toolkit
+      on PATH the row is about 803 MB, the download lands in
+      the `cuda12` runtime folder, any CUDA 13 build is removed, and
+      after a restart the chip shows `Cuda12`. Unset the variable: the
+      installed CUDA 12 build stays in use (no new download offered).
+- [ ] A PC whose driver or card supports neither build (driver from
+      before CUDA 12, or a card older than the GTX 900 series): the
+      hardware banner on Models ends with "GPU acceleration not offered:
+      …", the tier is a CPU tier, and Download on the pack answers with
+      the same reason.
+- [ ] No Visual C++ runtime (a clean Windows without
+      vcruntime140.dll / vcruntime140_1.dll / msvcp140.dll / vcomp140.dll
+      in System32): the boot log says "vc runtime: MISSING …", a toast
+      offers **Install it**, the installer is Microsoft's (signature
+      checked), Windows asks for permission, and after it finishes the
+      toast offers a restart. Declining the prompt says so.
 - [ ] Delete the GPU pack while it is loaded: the row returns to Download
       at once, the toast says files in use are cleared at the next start,
       and after a restart the folder holds no `.delete` files.
